@@ -1,0 +1,10 @@
+[package]
+name = "aarc"
+version = "0.0.1"
+edition = "2021"
+description = "Atomically updatable variants of Arc and Weak for lock-free concurrency."
+homepage = "https://github.com/aarc-rs/aarc"
+repository = "https://github.com/aarc-rs/aarc"
+license = "MIT"
+keywords = ["atomic", "arc", "thread-safe", "sync", "lock-free"]
+categories = ["concurrency", "memory-management", "data-structures", "algorithms"]

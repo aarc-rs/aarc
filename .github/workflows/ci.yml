@@ -1,0 +1,29 @@
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+env:
+  RUST_BACKTRACE: 1
+
+jobs:
+  basic-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo check
+      - run: >
+          rustup component add rustfmt && 
+          cargo fmt --all --check
+      - run: >
+          rustup component add clippy && 
+          cargo clippy --all-targets --all-features -- -D warnings
+  run-tests-with-miri:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup +nightly component add miri
+      - run: cargo +nightly miri test

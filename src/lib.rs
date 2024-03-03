@@ -1,18 +1,9 @@
-pub mod example1 {
-    /// The quick brown fox jumps over the lazy dog.
-    /// # Examples:
-    /// ```
-    /// assert!(true);
-    /// ```
-    pub fn say_hello() {
-        println!("hello world!");
-    }
-}
+pub mod atomics;
+pub(crate) mod hyaline;
+pub(crate) mod statics;
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn test1() {
-        assert_eq!(1, 1);
-    }
+pub(crate) mod utils {
+    pub(crate) mod helpers;
+    pub(crate) mod unrolled_linked_list;
+    pub(crate) mod unsafe_arc;
 }

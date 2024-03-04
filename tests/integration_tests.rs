@@ -1,5 +1,6 @@
-use aarc::atomics::AtomicArc;
+use aarc::{AtomicArc, AtomicWeak};
 use rand::random;
+use std::collections::VecDeque;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::Arc;
@@ -15,6 +16,7 @@ fn test_stack() {
         next: Option<Arc<Self>>,
     }
 
+    #[derive(Default)]
     struct Stack {
         top: AtomicArc<StackNode>,
     }
@@ -49,9 +51,7 @@ fn test_stack() {
         }
     }
 
-    let stack = Stack {
-        top: AtomicArc::default(),
-    };
+    let stack = Stack::default();
 
     thread::scope(|s| {
         for _ in 0..THREADS_COUNT {
@@ -82,59 +82,81 @@ fn test_stack() {
 }
 
 #[test]
-fn test_sorted_linked_list() {
+fn test_sorted_doubly_linked_list() {
     const THREADS_COUNT: usize = 5;
     const ITERS_PER_THREAD: usize = 10;
 
+    #[derive(Default)]
     struct ListNode {
         val: usize,
-        next: AtomicArc<ListNode>,
+        prev: AtomicWeak<Self>,
+        next: AtomicArc<Self>,
     }
 
-    let head = AtomicArc::new(Some(ListNode {
-        val: 0,
-        next: AtomicArc::new(None),
-    }));
+    struct LinkedList {
+        head: Arc<ListNode>,
+    }
+
+    impl LinkedList {
+        fn insert_sorted(&self, val: usize) {
+            let mut curr_arc = self.head.clone();
+            let mut next = curr_arc.next.load(SeqCst);
+            loop {
+                if next.is_none() || val < next.as_ref().unwrap().val {
+                    let new = Arc::new(ListNode {
+                        val,
+                        prev: AtomicWeak::from(Arc::downgrade(&curr_arc)),
+                        next: AtomicArc::from(next.clone()),
+                    });
+                    match curr_arc
+                        .next
+                        .compare_exchange(next.as_ref(), Some(&new), SeqCst, SeqCst)
+                    {
+                        Ok(_) => {
+                            if let Some(next_node) = next {
+                                next_node.prev.store(Some(&Arc::downgrade(&new)), SeqCst);
+                            }
+                            break;
+                        }
+                        Err(actual_next) => next = actual_next,
+                    }
+                } else {
+                    curr_arc = next.unwrap();
+                    next = curr_arc.next.load(SeqCst);
+                }
+            }
+        }
+    }
+
+    let list = LinkedList {
+        head: Arc::new(ListNode::default()),
+    };
 
     thread::scope(|s| {
         for _ in 0..THREADS_COUNT {
             s.spawn(|| {
                 for _ in 0..ITERS_PER_THREAD {
-                    let val = random::<usize>();
-                    let mut curr_arc = head.load(SeqCst).unwrap();
-                    let mut next = curr_arc.next.load(SeqCst);
-                    'inner: loop {
-                        if next.is_none() || val < next.as_ref().unwrap().val {
-                            let new = Arc::new(ListNode {
-                                val,
-                                next: AtomicArc::from(next.clone()),
-                            });
-                            match curr_arc.next.compare_exchange(
-                                next.as_ref(),
-                                Some(&new),
-                                SeqCst,
-                                SeqCst,
-                            ) {
-                                Ok(_) => break 'inner,
-                                Err(actual_next) => next = actual_next,
-                            }
-                        } else {
-                            curr_arc = next.unwrap();
-                            next = curr_arc.next.load(SeqCst);
-                        }
-                    }
+                    list.insert_sorted(random::<usize>());
                 }
             });
         }
     });
 
     // Verify that no nodes were lost and that the list is in sorted order.
-    let mut i = 0;
-    let mut curr_arc = head.load(SeqCst).unwrap();
-    while let Some(next_node) = curr_arc.next.load(SeqCst) {
-        assert!(curr_arc.val <= next_node.val);
-        curr_arc = next_node;
-        i += 1;
+    let mut stack = VecDeque::new();
+    let mut curr_node = list.head.clone();
+    while let Some(next_node) = curr_node.next.load(SeqCst) {
+        assert!(curr_node.val <= next_node.val);
+        stack.push_back(next_node.val);
+        curr_node = next_node;
     }
-    assert_eq!(THREADS_COUNT * ITERS_PER_THREAD, i);
+    assert_eq!(THREADS_COUNT * ITERS_PER_THREAD, stack.len());
+
+    // Check the weak pointers by iterating in reverse order and popping from the stack.
+    while let Some(prev_weak) = curr_node.prev.load(SeqCst) {
+        let prev_node = prev_weak.upgrade().unwrap();
+        assert_eq!(stack.pop_back().unwrap(), curr_node.val);
+        curr_node = prev_node;
+    }
+    assert_eq!(stack.len(), 0);
 }

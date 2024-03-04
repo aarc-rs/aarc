@@ -1,4 +1,7 @@
-pub mod atomics;
+pub use atomics::AtomicArc;
+pub use atomics::AtomicWeak;
+
+pub(crate) mod atomics;
 pub(crate) mod hyaline;
 pub(crate) mod statics;
 

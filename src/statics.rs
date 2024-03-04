@@ -1,7 +1,7 @@
 use crate::hyaline::{Context, DeferredFn, Slot};
 use std::cell::RefCell;
 use std::ptr::null_mut;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, Weak};
 use std::thread::AccessError;
 
 const SLOTS_PER_NODE: usize = 64;
@@ -38,21 +38,29 @@ pub(crate) fn release() {
     }
 }
 
-pub(crate) fn retire<T>(raw_arc_ptr: *const T) {
+pub(crate) fn retire<T, const IS_STRONG: bool>(ptr: *const T) {
     if let Ok(slot) = get_slot() {
         get_context().retire(
             slot,
             DeferredFn {
-                ptr: raw_arc_ptr as *mut u8,
-                f: Box::new(|ptr| unsafe {
-                    Arc::decrement_strong_count(ptr as *const T);
+                ptr: ptr as *mut u8,
+                f: Box::new(|p| unsafe {
+                    if IS_STRONG {
+                        drop(Arc::from_raw(p as *const T));
+                    } else {
+                        drop(Weak::from_raw(p as *const T));
+                    };
                 }),
             },
         );
     } else {
         // The TLS key is being destroyed. This path is only safe during cleanup.
         unsafe {
-            Arc::decrement_strong_count(raw_arc_ptr);
+            if IS_STRONG {
+                drop(Arc::from_raw(ptr));
+            } else {
+                drop(Weak::from_raw(ptr));
+            };
         }
     }
 }

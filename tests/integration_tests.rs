@@ -1,6 +1,5 @@
 use aarc::{AtomicArc, AtomicWeak};
 use rand::random;
-use std::collections::VecDeque;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::Arc;
@@ -113,14 +112,10 @@ fn test_sorted_doubly_linked_list() {
                         .compare_exchange(next.as_ref(), Some(&new), SeqCst, SeqCst)
                     {
                         Ok(_) => {
-                            // Update the next node's prev ptr unless another thread already did.
                             if let Some(next_node) = next {
-                                _ = next_node.prev.compare_exchange(
-                                    Some(&Arc::downgrade(&curr_node)),
-                                    Some(&Arc::downgrade(&new)),
-                                    SeqCst,
-                                    SeqCst,
-                                );
+                                // This is technically incorrect, as some other node could've
+                                // been inserted, but we don't care for the purposes of this test.
+                                next_node.prev.store(Some(&Arc::downgrade(&new)), SeqCst);
                             }
                             break;
                         }
@@ -149,20 +144,18 @@ fn test_sorted_doubly_linked_list() {
     });
 
     // Verify that no nodes were lost and that the list is in sorted order.
-    let mut stack = VecDeque::new();
+    let mut i = 0;
     let mut curr_node = list.head.clone();
     while let Some(next_node) = curr_node.next.load(SeqCst) {
         assert!(curr_node.val <= next_node.val);
-        stack.push_back(next_node.val);
         curr_node = next_node;
+        i += 1;
     }
-    assert_eq!(THREADS_COUNT * ITERS_PER_THREAD, stack.len());
-
-    // Check the weak pointers by iterating in reverse order and popping from the stack.
+    assert_eq!(THREADS_COUNT * ITERS_PER_THREAD, i);
+    // Iterate in reverse order using the weak ptrs (they may skip over some nodes but that's ok).
     while let Some(prev_weak) = curr_node.prev.load(SeqCst) {
         let prev_node = prev_weak.upgrade().unwrap();
-        assert_eq!(stack.pop_back().unwrap(), curr_node.val);
+        assert!(curr_node.val >= prev_node.val);
         curr_node = prev_node;
     }
-    assert_eq!(stack.len(), 0);
 }

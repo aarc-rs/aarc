@@ -99,30 +99,36 @@ fn test_sorted_doubly_linked_list() {
 
     impl LinkedList {
         fn insert_sorted(&self, val: usize) {
-            let mut curr_arc = self.head.clone();
-            let mut next = curr_arc.next.load(SeqCst);
+            let mut curr_node = self.head.clone();
+            let mut next = curr_node.next.load(SeqCst);
             loop {
                 if next.is_none() || val < next.as_ref().unwrap().val {
                     let new = Arc::new(ListNode {
                         val,
-                        prev: AtomicWeak::from(Arc::downgrade(&curr_arc)),
+                        prev: AtomicWeak::from(Arc::downgrade(&curr_node)),
                         next: AtomicArc::from(next.clone()),
                     });
-                    match curr_arc
+                    match curr_node
                         .next
                         .compare_exchange(next.as_ref(), Some(&new), SeqCst, SeqCst)
                     {
                         Ok(_) => {
+                            // Update the next node's prev ptr unless another thread already did.
                             if let Some(next_node) = next {
-                                next_node.prev.store(Some(&Arc::downgrade(&new)), SeqCst);
+                                _ = next_node.prev.compare_exchange(
+                                    Some(&Arc::downgrade(&curr_node)),
+                                    Some(&Arc::downgrade(&new)),
+                                    SeqCst,
+                                    SeqCst,
+                                );
                             }
                             break;
                         }
                         Err(actual_next) => next = actual_next,
                     }
                 } else {
-                    curr_arc = next.unwrap();
-                    next = curr_arc.next.load(SeqCst);
+                    curr_node = next.unwrap();
+                    next = curr_node.next.load(SeqCst);
                 }
             }
         }

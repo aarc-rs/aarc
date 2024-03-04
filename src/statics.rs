@@ -2,7 +2,6 @@ use crate::hyaline::{Context, DeferredFn, Slot};
 use std::cell::RefCell;
 use std::ptr::null_mut;
 use std::sync::{Arc, OnceLock, Weak};
-use std::thread::AccessError;
 
 const SLOTS_PER_NODE: usize = 64;
 
@@ -16,53 +15,41 @@ thread_local! {
     static SLOT_HANDLE: RefCell<SlotHandle> = RefCell::default();
 }
 
-fn get_slot() -> Result<*mut Slot, AccessError> {
-    SLOT_HANDLE.try_with(|h| {
-        let mut borrowed = h.borrow_mut();
-        if borrowed.slot.is_null() {
-            borrowed.slot = get_context().reserve_slot();
+fn get_slot() -> *mut Slot {
+    SLOT_HANDLE.with_borrow_mut(|h| {
+        if h.slot.is_null() {
+            h.slot = get_context().reserve_slot();
         }
-        borrowed.slot
+        h.slot
     })
 }
 
 pub(crate) fn begin_critical_section() {
     unsafe {
-        (*get_slot().unwrap()).activate();
+        (*get_slot()).activate();
     }
 }
 
 pub(crate) fn end_critical_section() {
     unsafe {
-        (*get_slot().unwrap()).deactivate();
+        (*get_slot()).deactivate();
     }
 }
 
 pub(crate) fn retire<T, const IS_STRONG: bool>(ptr: *const T) {
-    if let Ok(slot) = get_slot() {
-        get_context().retire(
-            slot,
-            DeferredFn {
-                ptr: ptr as *mut u8,
-                f: Box::new(|p| unsafe {
-                    if IS_STRONG {
-                        drop(Arc::from_raw(p as *const T));
-                    } else {
-                        drop(Weak::from_raw(p as *const T));
-                    };
-                }),
-            },
-        );
-    } else {
-        // The TLS key is being destroyed. This path is only safe during cleanup.
-        unsafe {
-            if IS_STRONG {
-                drop(Arc::from_raw(ptr));
-            } else {
-                drop(Weak::from_raw(ptr));
-            };
-        }
-    }
+    get_context().retire(
+        get_slot(),
+        DeferredFn {
+            ptr: ptr as *mut u8,
+            f: Box::new(|p| unsafe {
+                if IS_STRONG {
+                    drop(Arc::from_raw(p as *const T));
+                } else {
+                    drop(Weak::from_raw(p as *const T));
+                };
+            }),
+        },
+    );
 }
 
 struct SlotHandle {

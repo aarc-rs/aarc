@@ -30,22 +30,7 @@ impl<const N: usize> Context<N> {
         unsafe {
             (*slot).is_reserved.store(false, SeqCst);
         }
-        if self.slots_reserved.fetch_sub(1, SeqCst) == 1 {
-            // The last participant to leave should try to clean up every slot.
-            for slot in self.slots.iter(SeqCst) {
-                match slot
-                    .is_reserved
-                    .compare_exchange(false, true, SeqCst, SeqCst)
-                {
-                    Ok(_) => {
-                        drop(mem::take(slot.batch.borrow_mut().deref_mut()));
-                        slot.detach_head();
-                        slot.is_reserved.store(false, SeqCst);
-                    }
-                    Err(_) => break,
-                }
-            }
-        }
+        self.slots_reserved.fetch_sub(1, SeqCst);
     }
     pub(crate) fn retire(&self, slot: *mut Slot, deferred_fn: DeferredFn) {
         unsafe {

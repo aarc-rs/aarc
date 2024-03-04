@@ -95,10 +95,10 @@ pub(crate) struct Slot {
 }
 
 impl Slot {
-    pub(crate) fn acquire(&self) {
+    pub(crate) fn activate(&self) {
         self.is_active.store(true, SeqCst);
     }
-    pub(crate) fn release(&self) {
+    pub(crate) fn deactivate(&self) {
         self.is_active.store(false, SeqCst);
         self.detach_head();
     }

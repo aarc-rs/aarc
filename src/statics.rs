@@ -26,15 +26,15 @@ fn get_slot() -> Result<*mut Slot, AccessError> {
     })
 }
 
-pub(crate) fn acquire() {
+pub(crate) fn begin_critical_section() {
     unsafe {
-        (*get_slot().unwrap()).acquire();
+        (*get_slot().unwrap()).activate();
     }
 }
 
-pub(crate) fn release() {
+pub(crate) fn end_critical_section() {
     unsafe {
-        (*get_slot().unwrap()).release();
+        (*get_slot().unwrap()).deactivate();
     }
 }
 

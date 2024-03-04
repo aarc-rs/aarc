@@ -1,4 +1,4 @@
-use crate::statics::{acquire, release, retire};
+use crate::statics::{begin_critical_section, end_critical_section, retire};
 use std::mem::ManuallyDrop;
 use std::ops::Deref;
 use std::ptr::null;
@@ -6,6 +6,7 @@ use std::sync::atomic::Ordering::SeqCst;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::{Arc, Weak};
 
+/// An atomically updatable variant of [`Arc`].
 pub struct AtomicArc<T> {
     ptr: AtomicPtr<T>,
 }
@@ -99,7 +100,7 @@ impl<T> AtomicArc<T> {
     ) -> Result<(), Option<Arc<T>>> {
         let c: *const T = current.map_or(null(), Arc::as_ptr);
         let n: *const T = new.map_or(null(), Arc::as_ptr);
-        acquire();
+        begin_critical_section();
         let result = match self
             .ptr
             .compare_exchange(c.cast_mut(), n.cast_mut(), success, failure)
@@ -122,19 +123,19 @@ impl<T> AtomicArc<T> {
                 }
             },
         };
-        release();
+        end_critical_section();
         result
     }
 
     fn _load(&self, order: Ordering) -> *mut T {
-        acquire();
+        begin_critical_section();
         let ptr = self.ptr.load(order);
         if !ptr.is_null() {
             unsafe {
                 Arc::increment_strong_count(ptr);
             }
         }
-        release();
+        end_critical_section();
         ptr
     }
 }
@@ -181,6 +182,7 @@ impl<T> From<Option<Arc<T>>> for AtomicArc<T> {
     }
 }
 
+/// An atomically updatable variant of [`Weak`].
 pub struct AtomicWeak<T> {
     ptr: AtomicPtr<T>,
 }
@@ -205,14 +207,14 @@ impl<T> AtomicWeak<T> {
     /// assert_eq!(Weak::weak_count(&loaded), 3);
     /// ```
     pub fn load(&self, order: Ordering) -> Option<Weak<T>> {
-        acquire();
+        begin_critical_section();
         let ptr = self.ptr.load(order);
         let result = if !ptr.is_null() {
             unsafe { Some(clone_weak_from_raw(ptr)) }
         } else {
             None
         };
-        release();
+        end_critical_section();
         result
     }
 
@@ -259,7 +261,7 @@ impl<T> AtomicWeak<T> {
     ) -> Result<(), Option<Weak<T>>> {
         let c: *const T = current.map_or(null(), Weak::as_ptr);
         let n: *const T = new.map_or(null(), Weak::as_ptr);
-        acquire();
+        begin_critical_section();
         let result = match self
             .ptr
             .compare_exchange(c.cast_mut(), n.cast_mut(), success, failure)
@@ -281,7 +283,7 @@ impl<T> AtomicWeak<T> {
                 }
             },
         };
-        release();
+        end_critical_section();
         result
     }
 }

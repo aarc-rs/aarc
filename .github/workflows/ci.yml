@@ -21,3 +21,4 @@ jobs:
       - uses: actions/checkout@v4
       - run: rustup +nightly component add miri
       - run: cargo +nightly miri test -- --test-threads=1
+      - run: cargo test -- --test-threads=1

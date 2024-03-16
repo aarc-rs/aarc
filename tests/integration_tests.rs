@@ -1,73 +1,74 @@
-use aarc::{AtomicArc, AtomicWeak};
+use aarc::{Arc, AtomicArc, AtomicWeak, Snapshot};
 use rand::random;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::SeqCst;
-use std::sync::Arc;
-use std::{array, thread};
+use std::thread;
 
-#[test]
-fn test_stack() {
-    const THREADS_COUNT: usize = 5;
-    const ITERS_PER_THREAD: usize = 10;
-
+fn test_stack(threads_count: usize, iters_per_thread: usize) {
     struct StackNode {
         val: usize,
-        next: Option<Arc<Self>>,
+        next: Option<Arc<'static, Self>>,
     }
 
     #[derive(Default)]
     struct Stack {
-        top: AtomicArc<StackNode>,
+        top: AtomicArc<'static, StackNode>,
     }
 
     impl Stack {
         fn push(&self, val: usize) {
-            let mut top = self.top.load(SeqCst);
+            let mut top = self.top.load::<Snapshot<_>>(SeqCst);
             loop {
-                let new_node = Arc::new(StackNode { val, next: top });
-                match self.top.compare_exchange(
-                    new_node.next.as_ref(),
-                    Some(&new_node),
-                    SeqCst,
-                    SeqCst,
-                ) {
+                let new_node = Arc::new(StackNode {
+                    val,
+                    next: top.as_ref().map(Arc::from),
+                });
+                match self
+                    .top
+                    .compare_exchange(top.as_ref(), Some(&new_node), SeqCst, SeqCst)
+                {
                     Ok(_) => break,
                     Err(before) => top = before,
                 }
             }
         }
-        fn pop(&self) -> Arc<StackNode> {
-            let mut top = self.top.load(SeqCst).unwrap();
-            loop {
-                match self
-                    .top
-                    .compare_exchange(Some(&top), top.next.as_ref(), SeqCst, SeqCst)
-                {
+        fn pop(&self) -> Option<Arc<'static, StackNode>> {
+            let mut top = self.top.load::<Arc<_, _>>(SeqCst);
+            while let Some(top_node) = top.as_ref() {
+                match self.top.compare_exchange(
+                    top.as_ref(),
+                    top_node.next.as_ref(),
+                    SeqCst,
+                    SeqCst,
+                ) {
                     Ok(_) => return top,
-                    Err(before) => top = before.unwrap(),
+                    Err(actual_top) => top = actual_top,
                 }
             }
+            None
         }
     }
 
     let stack = Stack::default();
 
     thread::scope(|s| {
-        for _ in 0..THREADS_COUNT {
+        for _ in 0..threads_count {
             s.spawn(|| {
-                for i in 0..ITERS_PER_THREAD {
-                    stack.push(i)
+                for i in 0..iters_per_thread {
+                    stack.push(i);
                 }
             });
         }
     });
 
-    let val_counts: [AtomicUsize; ITERS_PER_THREAD] = array::from_fn(|_| AtomicUsize::default());
+    let val_counts: Vec<AtomicUsize> = (0..iters_per_thread)
+        .map(|_| AtomicUsize::default())
+        .collect();
     thread::scope(|s| {
-        for _ in 0..THREADS_COUNT {
+        for _ in 0..threads_count {
             s.spawn(|| {
-                for _ in 0..ITERS_PER_THREAD {
-                    let node = stack.pop();
+                for _ in 0..iters_per_thread {
+                    let node = stack.pop().unwrap();
                     val_counts[node.val].fetch_add(1, SeqCst);
                 }
             });
@@ -76,36 +77,43 @@ fn test_stack() {
 
     // Verify that no nodes were lost.
     for count in val_counts.iter() {
-        assert_eq!(count.load(SeqCst), THREADS_COUNT);
+        assert_eq!(count.load(SeqCst), threads_count);
     }
 }
 
 #[test]
-fn test_sorted_doubly_linked_list() {
-    const THREADS_COUNT: usize = 5;
-    const ITERS_PER_THREAD: usize = 10;
+fn test_stack_small() {
+    test_stack(5, 10);
+}
 
+#[test]
+#[cfg_attr(miri, ignore)]
+fn test_stack_full() {
+    test_stack(8, 500);
+}
+
+fn test_sorted_linked_list(threads_count: usize, iters_per_thread: usize) {
     #[derive(Default)]
     struct ListNode {
         val: usize,
-        prev: AtomicWeak<Self>,
-        next: AtomicArc<Self>,
+        prev: AtomicWeak<'static, Self>,
+        next: AtomicArc<'static, Self>,
     }
 
     struct LinkedList {
-        head: Arc<ListNode>,
+        head: AtomicArc<'static, ListNode>,
     }
 
     impl LinkedList {
         fn insert_sorted(&self, val: usize) {
-            let mut curr_node = self.head.clone();
-            let mut next = curr_node.next.load(SeqCst);
+            let mut curr_node = self.head.load::<Snapshot<_>>(SeqCst).unwrap();
+            let mut next = curr_node.next.load::<Snapshot<_>>(SeqCst);
             loop {
                 if next.is_none() || val < next.as_ref().unwrap().val {
                     let new = Arc::new(ListNode {
                         val,
-                        prev: AtomicWeak::from(Arc::downgrade(&curr_node)),
-                        next: AtomicArc::from(next.clone()),
+                        prev: AtomicWeak::from(&curr_node),
+                        next: next.as_ref().map_or(AtomicArc::default(), AtomicArc::from),
                     });
                     match curr_node
                         .next
@@ -113,8 +121,8 @@ fn test_sorted_doubly_linked_list() {
                     {
                         Ok(_) => {
                             if let Some(next_node) = next {
-                                // This is technically incorrect, as some other node could've
-                                // been inserted, but we don't care for the purposes of this test.
+                                // This is technically incorrect; another node could've been
+                                // inserted, but it's not crucial for this test.
                                 next_node.prev.store(Some(&Arc::downgrade(&new)), SeqCst);
                             }
                             break;
@@ -130,13 +138,13 @@ fn test_sorted_doubly_linked_list() {
     }
 
     let list = LinkedList {
-        head: Arc::new(ListNode::default()),
+        head: AtomicArc::new(Some(ListNode::default())),
     };
 
     thread::scope(|s| {
-        for _ in 0..THREADS_COUNT {
+        for _ in 0..threads_count {
             s.spawn(|| {
-                for _ in 0..ITERS_PER_THREAD {
+                for _ in 0..iters_per_thread {
                     list.insert_sorted(random::<usize>());
                 }
             });
@@ -145,17 +153,32 @@ fn test_sorted_doubly_linked_list() {
 
     // Verify that no nodes were lost and that the list is in sorted order.
     let mut i = 0;
-    let mut curr_node = list.head.clone();
-    while let Some(next_node) = curr_node.next.load(SeqCst) {
-        assert!(curr_node.val <= next_node.val);
-        curr_node = next_node;
-        i += 1;
+    let mut curr_node = list.head.load::<Snapshot<_>>(SeqCst).unwrap();
+    loop {
+        let next = curr_node.next.load::<Snapshot<_>>(SeqCst);
+        if let Some(next_node) = next {
+            assert!(curr_node.val <= next_node.val);
+            curr_node = next_node;
+            i += 1;
+        } else {
+            break;
+        }
     }
-    assert_eq!(THREADS_COUNT * ITERS_PER_THREAD, i);
-    // Iterate in reverse order using the weak ptrs (they may skip over some nodes but that's ok).
-    while let Some(prev_weak) = curr_node.prev.load(SeqCst) {
-        let prev_node = prev_weak.upgrade().unwrap();
+    assert_eq!(threads_count * iters_per_thread, i);
+    // Iterate in reverse order using the weak ptrs.
+    while let Some(prev_node) = curr_node.prev.upgrade::<Snapshot<_>>(SeqCst) {
         assert!(curr_node.val >= prev_node.val);
         curr_node = prev_node;
     }
+}
+
+#[test]
+fn test_sorted_linked_list_small() {
+    test_sorted_linked_list(5, 10);
+}
+
+#[test]
+#[cfg_attr(miri, ignore)]
+fn test_sorted_linked_list_full() {
+    test_sorted_linked_list(8, 500);
 }

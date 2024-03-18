@@ -1,10 +1,10 @@
-on: [push, pull_request]
+on: [ push, pull_request ]
 
 env:
   RUST_BACKTRACE: 1
 
 jobs:
-  basic-checks:
+  basic-checks-and-tests:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -15,10 +15,6 @@ jobs:
       - run: >
           rustup component add clippy && 
           cargo clippy --all-targets --all-features -- -D warnings
-  run-tests-with-miri:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+      - run: cargo test -- --test-threads=1
       - run: rustup +nightly component add miri
       - run: cargo +nightly miri test -- --test-threads=1
-      - run: cargo test -- --test-threads=1

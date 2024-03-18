@@ -8,7 +8,7 @@ repository = "https://github.com/aarc-rs/aarc"
 license = "MIT"
 keywords = ["atomic", "arc", "thread-safe", "sync", "lock-free"]
 categories = ["concurrency", "memory-management", "data-structures", "algorithms"]
-exclude = [".github/", ".gitignore"]
+exclude = [".github/", ".gitignore", "target/"]
 
 [dev-dependencies]
 rand = "0.8"

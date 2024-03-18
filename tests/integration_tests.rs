@@ -33,7 +33,7 @@ fn test_stack(threads_count: usize, iters_per_thread: usize) {
             }
         }
         fn pop(&self) -> Option<Arc<StackNode>> {
-            let mut top = self.top.load::<Arc<_, _>>(SeqCst);
+            let mut top = self.top.load::<Arc<_>>(SeqCst);
             while let Some(top_node) = top.as_ref() {
                 match self.top.compare_exchange(
                     top.as_ref(),

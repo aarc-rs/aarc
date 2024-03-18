@@ -16,8 +16,8 @@ use std::{mem, ptr};
 ///
 /// - `T` has a `'static` lifetime bound, as the `Arc` might not be destroyed immediately when the
 /// reference count reaches zero.
-/// - `T` must be [`Sized`]. [`AtomicArc`] wraps [`AtomicPtr`], which also has this bound due to
-/// lack of support for double-width atomics.
+/// - `T` must be [`Sized`] for compatability with [`AtomicArc`], which wraps [`AtomicPtr`],
+/// which also has this bound.
 ///
 /// See [`std::sync::Arc`] for per-method documentation.
 ///
@@ -27,6 +27,14 @@ use std::{mem, ptr};
 ///
 /// let x = Arc::new(53);
 /// assert_eq!(*x, 53);
+///
+/// let y = Arc::new(53);
+/// assert_eq!(*x, *y);
+///
+/// assert!(!Arc::ptr_eq(&x, &y));
+///
+/// let w = Arc::downgrade(&x);
+/// assert_eq!(Arc::weak_count(&x), 1);
 /// ```
 ///
 /// [`AtomicArc`]: `super::AtomicArc`
@@ -76,6 +84,9 @@ impl<T: 'static, R: Retire> Arc<T, R> {
                 phantom_r: PhantomData,
             }
         }
+    }
+    pub fn ptr_eq(this: &Self, other: &Self) -> bool {
+        ptr::eq(Self::as_ptr(this), Self::as_ptr(other))
     }
     pub fn strong_count(this: &Self) -> usize {
         unsafe { (*this.ptr.as_ptr()).strong.load(Relaxed) }
@@ -205,6 +216,8 @@ unsafe impl<T: 'static + Send + Sync, R: Retire> Sync for Weak<T, R> {}
 /// A `Snapshot` should be used as a temporary variable. **It should not be used in place of
 /// [`Arc`] or [`AtomicArc`] in a data structure**. In addition, if a thread holds too
 /// many `Snapshot`s at a time, the performance of [`StandardReclaimer`] may gradually degrade.
+///
+/// The only way to obtain one is to `load` an [`AtomicArc`] or `upgrade` an [`AtomicWeak`].
 ///
 /// [`AtomicArc`]: `super::AtomicArc`
 /// [`AtomicWeak`]: `super::AtomicWeak`

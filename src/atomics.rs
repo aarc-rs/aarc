@@ -10,6 +10,13 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 
 /// An atomically updatable [`Arc`].
 ///
+/// This struct can be considered a cross between [`Arc`] and [`AtomicPtr`]. It contributes to the
+/// strong count, but does not implement `Deref`. Note that [`Arc`] must point to something, but
+/// `AtomicArc` can be null, in which case `load`ing it will return [`None`].
+///
+/// `AtomicArc` is compatable with both [`Arc`] and [`Snapshot`], as most methods accept
+/// [`Strong`], which represents an owned pointer that prevents deallocation.
+///
 /// # Examples
 /// ```
 /// use std::sync::atomic::Ordering::SeqCst;
@@ -244,7 +251,7 @@ impl<T: 'static, R: Protect + Retire> AtomicWeak<T, R> {
         }
     }
 
-    /// Loads the pointer and returns a [`Weak`] or [`None`] if it is null.
+    /// Loads the pointer and returns a [`Weak`], or [`None`] if it is null.
     pub fn load(&self, order: Ordering) -> Option<Weak<T, R>> {
         with_critical_section::<R, _, _>(|| {
             let ptr = self.ptr.load(order);
@@ -342,6 +349,33 @@ impl<T: 'static, R: Protect + ProtectPtr + Retire> From<&Snapshot<T, R>> for Ato
     fn from(value: &Snapshot<T, R>) -> Self {
         unsafe {
             let inner = Snapshot::as_ptr(value) as *const ArcInner<T>;
+            (*inner).increment_weak_count();
+            Self {
+                ptr: AtomicPtr::new(inner as *mut T),
+                phantom_r: PhantomData,
+            }
+        }
+    }
+}
+
+impl<T: 'static, R: Protect + ProtectPtr + Retire> From<&Arc<T, R>> for AtomicArc<T, R> {
+    fn from(value: &Arc<T, R>) -> Self {
+        unsafe {
+            let inner = Arc::as_ptr(value) as *const ArcInner<T>;
+            (*inner).increment_strong_count();
+            Self {
+                ptr: AtomicPtr::new(inner as *mut T),
+                phantom: PhantomData,
+                phantom_r: PhantomData,
+            }
+        }
+    }
+}
+
+impl<T: 'static, R: Protect + ProtectPtr + Retire> From<&Arc<T, R>> for AtomicWeak<T, R> {
+    fn from(value: &Arc<T, R>) -> Self {
+        unsafe {
+            let inner = Arc::as_ptr(value) as *const ArcInner<T>;
             (*inner).increment_weak_count();
             Self {
                 ptr: AtomicPtr::new(inner as *mut T),

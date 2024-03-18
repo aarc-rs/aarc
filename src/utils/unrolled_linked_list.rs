@@ -72,6 +72,9 @@ impl<T: Default, const N: usize> Default for UnrolledLinkedList<T, N> {
         }
     }
 }
+unsafe impl<T: Default + Send + Sync, const N: usize> Send for UnrolledLinkedList<T, N> {}
+
+unsafe impl<T: Default + Send + Sync, const N: usize> Sync for UnrolledLinkedList<T, N> {}
 
 struct ULLNode<T, const N: usize> {
     items: [T; N],

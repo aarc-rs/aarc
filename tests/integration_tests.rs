@@ -7,12 +7,12 @@ use std::thread;
 fn test_stack(threads_count: usize, iters_per_thread: usize) {
     struct StackNode {
         val: usize,
-        next: Option<Arc<'static, Self>>,
+        next: Option<Arc<Self>>,
     }
 
     #[derive(Default)]
     struct Stack {
-        top: AtomicArc<'static, StackNode>,
+        top: AtomicArc<StackNode>,
     }
 
     impl Stack {
@@ -32,7 +32,7 @@ fn test_stack(threads_count: usize, iters_per_thread: usize) {
                 }
             }
         }
-        fn pop(&self) -> Option<Arc<'static, StackNode>> {
+        fn pop(&self) -> Option<Arc<StackNode>> {
             let mut top = self.top.load::<Arc<_, _>>(SeqCst);
             while let Some(top_node) = top.as_ref() {
                 match self.top.compare_exchange(
@@ -96,12 +96,12 @@ fn test_sorted_linked_list(threads_count: usize, iters_per_thread: usize) {
     #[derive(Default)]
     struct ListNode {
         val: usize,
-        prev: AtomicWeak<'static, Self>,
-        next: AtomicArc<'static, Self>,
+        prev: AtomicWeak<Self>,
+        next: AtomicArc<Self>,
     }
 
     struct LinkedList {
-        head: AtomicArc<'static, ListNode>,
+        head: AtomicArc<ListNode>,
     }
 
     impl LinkedList {

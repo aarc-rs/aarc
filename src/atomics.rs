@@ -1,5 +1,5 @@
 use crate::shared_ptrs::{ArcInner, AsPtr, CloneFromRaw, TryCloneFromRaw};
-use crate::smr::drc::{Protect, ProtectPtr, ProvideGlobal, Retire};
+use crate::smr::drc::{Protect, ProtectPtr, Retire};
 use crate::smr::standard_reclaimer::StandardReclaimer;
 use crate::{Arc, Snapshot, Weak};
 use std::marker::PhantomData;
@@ -32,23 +32,28 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 /// let snapshot75 = atomic.load::<Snapshot<_>>(SeqCst);
 /// assert_eq!(*snapshot75.unwrap(), 75);
 /// ```
-pub struct AtomicArc<'a, T: 'a, R: Protect + Retire = StandardReclaimer> {
+pub struct AtomicArc<T: 'static, R: Protect + Retire = StandardReclaimer> {
     ptr: AtomicPtr<T>,
     phantom: PhantomData<T>,
-    reclaimer: &'a R,
+    phantom_r: PhantomData<R>,
 }
 
-impl<T: 'static> AtomicArc<'static, T, StandardReclaimer> {
+impl<T: 'static> AtomicArc<T, StandardReclaimer> {
     /// Similar to [`Arc::new`], but [`None`] is a valid input, in which case the `AtomicArc` will
     /// be empty to represent a null pointer.
     ///
     /// To create an `AtomicArc` from an existing [`Arc`], use `from`.
     pub fn new(data: Option<T>) -> Self {
-        Self::new_in(data, StandardReclaimer::get_global())
+        let ptr = data.map_or(null(), |x| Arc::into_raw(Arc::new(x)));
+        Self {
+            ptr: AtomicPtr::new(ptr.cast_mut()),
+            phantom: PhantomData,
+            phantom_r: PhantomData,
+        }
     }
 }
 
-impl<'a, T: 'a, R: Protect + Retire> AtomicArc<'a, T, R> {
+impl<T: 'static, R: Protect + Retire> AtomicArc<T, R> {
     /// Stores `new`'s pointer into `self` if `self` and `current` point to the same allocation.
     ///
     /// If the comparison succeeds, the return value will be an [`Ok`] containing the unit type
@@ -67,7 +72,7 @@ impl<'a, T: 'a, R: Protect + Retire> AtomicArc<'a, T, R> {
     {
         let c: *const T = current.map_or(null(), C::as_ptr);
         let n: *const T = new.map_or(null(), N::as_ptr);
-        match with_critical_section(self.reclaimer, || {
+        match with_critical_section::<R, _, _>(|| {
             self.ptr
                 .compare_exchange(c.cast_mut(), n.cast_mut(), success, failure)
                 .map(|before| unsafe {
@@ -100,7 +105,7 @@ impl<'a, T: 'a, R: Protect + Retire> AtomicArc<'a, T, R> {
     /// Loads the pointer and returns the desired type (`Arc` or `Snapshot`), or [`None`] if it is
     /// null.
     pub fn load<V: Strong<T>>(&self, order: Ordering) -> Option<V> {
-        with_critical_section(self.reclaimer, || {
+        with_critical_section::<R, _, _>(|| {
             let ptr = self.ptr.load(order);
             if ptr.is_null() {
                 None
@@ -108,16 +113,6 @@ impl<'a, T: 'a, R: Protect + Retire> AtomicArc<'a, T, R> {
                 unsafe { Some(V::clone_from_raw(ptr)) }
             }
         })
-    }
-
-    /// Analogous to [`Arc::new_in`].
-    pub fn new_in(data: Option<T>, reclaimer: &'a R) -> Self {
-        let ptr = data.map_or(null(), |x| Arc::into_raw(Arc::new_in(x, reclaimer)));
-        Self {
-            ptr: AtomicPtr::new(ptr.cast_mut()),
-            phantom: PhantomData,
-            reclaimer,
-        }
     }
 
     /// Stores `new`'s pointer (or [`None`]) into `self`.
@@ -137,9 +132,9 @@ impl<'a, T: 'a, R: Protect + Retire> AtomicArc<'a, T, R> {
     }
 }
 
-impl<'a, T: 'a, R: Protect + Retire> Clone for AtomicArc<'a, T, R> {
+impl<T: 'static, R: Protect + Retire> Clone for AtomicArc<T, R> {
     fn clone(&self) -> Self {
-        let ptr = with_critical_section(self.reclaimer, || {
+        let ptr = with_critical_section::<R, _, _>(|| {
             let ptr = self.ptr.load(SeqCst);
             if !ptr.is_null() {
                 unsafe {
@@ -151,22 +146,22 @@ impl<'a, T: 'a, R: Protect + Retire> Clone for AtomicArc<'a, T, R> {
         Self {
             ptr: AtomicPtr::new(ptr),
             phantom: PhantomData,
-            reclaimer: self.reclaimer,
+            phantom_r: PhantomData,
         }
     }
 }
 
-impl<T: 'static> Default for AtomicArc<'static, T, StandardReclaimer> {
+impl<T: 'static> Default for AtomicArc<T, StandardReclaimer> {
     fn default() -> Self {
         Self {
             ptr: AtomicPtr::default(),
             phantom: PhantomData,
-            reclaimer: StandardReclaimer::get_global(),
+            phantom_r: PhantomData,
         }
     }
 }
 
-impl<'a, T: 'a, R: Protect + Retire> Drop for AtomicArc<'a, T, R> {
+impl<T: 'static, R: Protect + Retire> Drop for AtomicArc<T, R> {
     fn drop(&mut self) {
         let ptr = self.ptr.load(SeqCst);
         if !ptr.is_null() {
@@ -198,12 +193,12 @@ impl<'a, T: 'a, R: Protect + Retire> Drop for AtomicArc<'a, T, R> {
 /// assert_eq!(Arc::strong_count(&arc2), 2);
 /// assert_eq!(Arc::weak_count(&arc2), 2);
 /// ```
-pub struct AtomicWeak<'a, T: 'a, R: Protect + Retire = StandardReclaimer> {
+pub struct AtomicWeak<T: 'static, R: Protect + Retire = StandardReclaimer> {
     ptr: AtomicPtr<T>,
-    reclaimer: &'a R,
+    phantom_r: PhantomData<R>,
 }
 
-impl<'a, T: 'a, R: Protect + Retire> AtomicWeak<'a, T, R> {
+impl<T: 'static, R: Protect + Retire> AtomicWeak<T, R> {
     /// See [`AtomicArc::compare_exchange`]. This method behaves similarly, except that the return
     /// type for the failure case cannot be specified by the caller; it must be a [`Weak`].
     pub fn compare_exchange<C, N>(
@@ -212,14 +207,14 @@ impl<'a, T: 'a, R: Protect + Retire> AtomicWeak<'a, T, R> {
         new: Option<&N>,
         success: Ordering,
         failure: Ordering,
-    ) -> Result<(), Option<Weak<'a, T, R>>>
+    ) -> Result<(), Option<Weak<T, R>>>
     where
         C: Shared<T>,
         N: Shared<T>,
     {
         let c: *const T = current.map_or(null(), C::as_ptr);
         let n: *const T = new.map_or(null(), N::as_ptr);
-        match with_critical_section(self.reclaimer, || {
+        match with_critical_section::<R, _, _>(|| {
             self.ptr
                 .compare_exchange(c.cast_mut(), n.cast_mut(), success, failure)
                 .map(|before| unsafe {
@@ -250,8 +245,8 @@ impl<'a, T: 'a, R: Protect + Retire> AtomicWeak<'a, T, R> {
     }
 
     /// Loads the pointer and returns a [`Weak`] or [`None`] if it is null.
-    pub fn load(&self, order: Ordering) -> Option<Weak<'a, T, R>> {
-        with_critical_section(self.reclaimer, || {
+    pub fn load(&self, order: Ordering) -> Option<Weak<T, R>> {
+        with_critical_section::<R, _, _>(|| {
             let ptr = self.ptr.load(order);
             if ptr.is_null() {
                 None
@@ -280,20 +275,20 @@ impl<'a, T: 'a, R: Protect + Retire> AtomicWeak<'a, T, R> {
     /// Returns a [`Strong`] (an [`Arc`] or a [`Snapshot`]) if the strong count is at least one.
     /// Analogous to [`std::sync::Weak::upgrade`].
     pub fn upgrade<V: Strong<T>>(&self, order: Ordering) -> Option<V> {
-        with_critical_section(self.reclaimer, || {
+        with_critical_section::<R, _, _>(|| {
             let ptr = self.ptr.load(order);
             if ptr.is_null() {
                 None
             } else {
-                V::try_clone_from_raw(ptr)
+                unsafe { V::try_clone_from_raw(ptr) }
             }
         })
     }
 }
 
-impl<'a, T: 'a, R: Protect + Retire> Clone for AtomicWeak<'a, T, R> {
+impl<T: 'static, R: Protect + Retire> Clone for AtomicWeak<T, R> {
     fn clone(&self) -> Self {
-        let ptr = with_critical_section(self.reclaimer, || {
+        let ptr = with_critical_section::<R, _, _>(|| {
             let ptr = self.ptr.load(SeqCst);
             if !ptr.is_null() {
                 unsafe {
@@ -304,21 +299,21 @@ impl<'a, T: 'a, R: Protect + Retire> Clone for AtomicWeak<'a, T, R> {
         });
         Self {
             ptr: AtomicPtr::new(ptr),
-            reclaimer: self.reclaimer,
+            phantom_r: PhantomData,
         }
     }
 }
 
-impl<T: 'static> Default for AtomicWeak<'static, T, StandardReclaimer> {
+impl<T: 'static> Default for AtomicWeak<T, StandardReclaimer> {
     fn default() -> Self {
         Self {
             ptr: AtomicPtr::default(),
-            reclaimer: StandardReclaimer::get_global(),
+            phantom_r: PhantomData,
         }
     }
 }
 
-impl<'a, T: 'a, R: Protect + Retire> Drop for AtomicWeak<'a, T, R> {
+impl<T: 'static, R: Protect + Retire> Drop for AtomicWeak<T, R> {
     fn drop(&mut self) {
         let ptr = self.ptr.load(SeqCst);
         if !ptr.is_null() {
@@ -329,41 +324,37 @@ impl<'a, T: 'a, R: Protect + Retire> Drop for AtomicWeak<'a, T, R> {
     }
 }
 
-impl<'a, T: 'a, R: Protect + ProtectPtr + Retire> From<&Snapshot<'a, T, R>>
-    for AtomicArc<'a, T, R>
-{
+impl<T: 'static, R: Protect + ProtectPtr + Retire> From<&Snapshot<T, R>> for AtomicArc<T, R> {
     fn from(value: &Snapshot<T, R>) -> Self {
         unsafe {
-            let inner = Snapshot::as_ptr(value) as *const ArcInner<T, R>;
+            let inner = Snapshot::as_ptr(value) as *const ArcInner<T>;
             (*inner).increment_strong_count();
             Self {
                 ptr: AtomicPtr::new(inner as *mut T),
                 phantom: PhantomData,
-                reclaimer: (*inner).reclaimer(),
+                phantom_r: PhantomData,
             }
         }
     }
 }
 
-impl<'a, T: 'a, R: Protect + ProtectPtr + Retire> From<&Snapshot<'a, T, R>>
-    for AtomicWeak<'a, T, R>
-{
+impl<T: 'static, R: Protect + ProtectPtr + Retire> From<&Snapshot<T, R>> for AtomicWeak<T, R> {
     fn from(value: &Snapshot<T, R>) -> Self {
         unsafe {
-            let inner = Snapshot::as_ptr(value) as *const ArcInner<T, R>;
+            let inner = Snapshot::as_ptr(value) as *const ArcInner<T>;
             (*inner).increment_weak_count();
             Self {
                 ptr: AtomicPtr::new(inner as *mut T),
-                reclaimer: (*inner).reclaimer(),
+                phantom_r: PhantomData,
             }
         }
     }
 }
 
-fn with_critical_section<'f, 'a: 'f, R: Protect + Retire, V, F: Fn() -> V>(m: &'a R, f: F) -> V {
-    m.begin_critical_section();
+fn with_critical_section<R: Protect, V, F: Fn() -> V>(f: F) -> V {
+    R::begin_critical_section();
     let result = f();
-    m.end_critical_section();
+    R::end_critical_section();
     result
 }
 

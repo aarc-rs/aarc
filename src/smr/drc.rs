@@ -1,13 +1,11 @@
-use std::cell::Cell;
-
 pub trait Protect {
-    fn begin_critical_section(&self);
-    fn end_critical_section(&self);
+    fn begin_critical_section();
+    fn end_critical_section();
 }
 
 pub trait ProtectPtr {
-    type ProtectionHandle: Release;
-    fn protect_ptr(&self, ptr: *mut u8) -> &Self::ProtectionHandle;
+    type ProtectionHandle: 'static + Release;
+    fn protect_ptr(ptr: *mut u8) -> &'static Self::ProtectionHandle;
 }
 
 pub trait Release {
@@ -15,10 +13,5 @@ pub trait Release {
 }
 
 pub trait Retire {
-    fn retire(&self, ptr: *mut u8, f: Box<dyn Fn(*mut u8)>);
-    fn drop_flag(&self) -> &Cell<bool>;
-}
-
-pub trait ProvideGlobal {
-    fn get_global() -> &'static Self;
+    fn retire(ptr: *mut u8, f: Box<dyn Fn()>);
 }

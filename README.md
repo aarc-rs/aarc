@@ -6,7 +6,6 @@ Example 1: [Treiber Stack](https://en.wikipedia.org/wiki/Treiber_stack)
 
 ```rust no_run
 use aarc::{Arc, AtomicArc, Snapshot};
-use std::sync::atomic::Ordering::SeqCst;
 
 struct StackNode {
     val: usize,
@@ -19,27 +18,28 @@ struct Stack {
 
 impl Stack {
     fn push(&self, val: usize) {
-        let mut top = self.top.load::<Snapshot<_>>(SeqCst);
+        // The `load` method can return an Arc or a Snapshot.
+        // Here, we load a Snapshot for demo purposes.
+        let mut top: Option<Snapshot<_>> = self.top.load();
         loop {
             let new_node = Arc::new(StackNode {
                 val,
+                // We can create an Arc `from` a &Snapshot (likewise for Snapshot and &Arc).
                 next: top.as_ref().map(Arc::from),
             });
-            match self
-                .top
-                .compare_exchange(top.as_ref(), Some(&new_node), SeqCst, SeqCst)
-            {
+            match self.top.compare_exchange(top.as_ref(), Some(&new_node)) {
                 Ok(_) => break,
-                Err(before) => top = before,
+                Err(actual_top) => top = actual_top,
             }
         }
     }
-    fn pop(&self) -> Option<Arc<StackNode>> {
-        let mut top = self.top.load::<Arc<_>>(SeqCst);
+    fn pop(&self) -> Option<Snapshot<StackNode>> {
+        // Same `load` method as the above, alternative syntax.
+        let mut top = self.top.load::<Snapshot<_>>();
         while let Some(top_node) = top.as_ref() {
             match self
                 .top
-                .compare_exchange(top.as_ref(), top_node.next.as_ref(), SeqCst, SeqCst)
+                .compare_exchange(top.as_ref(), top_node.next.as_ref())
             {
                 Ok(_) => return top,
                 Err(actual_top) => top = actual_top,

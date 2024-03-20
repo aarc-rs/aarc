@@ -17,30 +17,25 @@ fn test_stack(threads_count: usize, iters_per_thread: usize) {
 
     impl Stack {
         fn push(&self, val: usize) {
-            let mut top = self.top.load::<Snapshot<_>>(SeqCst);
+            let mut top = self.top.load::<Snapshot<_>>();
             loop {
                 let new_node = Arc::new(StackNode {
                     val,
                     next: top.as_ref().map(Arc::from),
                 });
-                match self
-                    .top
-                    .compare_exchange(top.as_ref(), Some(&new_node), SeqCst, SeqCst)
-                {
+                match self.top.compare_exchange(top.as_ref(), Some(&new_node)) {
                     Ok(_) => break,
                     Err(before) => top = before,
                 }
             }
         }
-        fn pop(&self) -> Option<Arc<StackNode>> {
-            let mut top = self.top.load::<Arc<_>>(SeqCst);
+        fn pop(&self) -> Option<Snapshot<StackNode>> {
+            let mut top = self.top.load::<Snapshot<_>>();
             while let Some(top_node) = top.as_ref() {
-                match self.top.compare_exchange(
-                    top.as_ref(),
-                    top_node.next.as_ref(),
-                    SeqCst,
-                    SeqCst,
-                ) {
+                match self
+                    .top
+                    .compare_exchange(top.as_ref(), top_node.next.as_ref())
+                {
                     Ok(_) => return top,
                     Err(actual_top) => top = actual_top,
                 }
@@ -106,8 +101,8 @@ fn test_sorted_linked_list(threads_count: usize, iters_per_thread: usize) {
 
     impl LinkedList {
         fn insert_sorted(&self, val: usize) {
-            let mut curr_node = self.head.load::<Snapshot<_>>(SeqCst).unwrap();
-            let mut next = curr_node.next.load::<Snapshot<_>>(SeqCst);
+            let mut curr_node = self.head.load::<Snapshot<_>>().unwrap();
+            let mut next = curr_node.next.load::<Snapshot<_>>();
             loop {
                 if next.is_none() || val < next.as_ref().unwrap().val {
                     let new = Arc::new(ListNode {
@@ -115,15 +110,12 @@ fn test_sorted_linked_list(threads_count: usize, iters_per_thread: usize) {
                         prev: AtomicWeak::from(&curr_node),
                         next: next.as_ref().map_or(AtomicArc::default(), AtomicArc::from),
                     });
-                    match curr_node
-                        .next
-                        .compare_exchange(next.as_ref(), Some(&new), SeqCst, SeqCst)
-                    {
+                    match curr_node.next.compare_exchange(next.as_ref(), Some(&new)) {
                         Ok(_) => {
                             if let Some(next_node) = next {
                                 // This is technically incorrect; another node could've been
                                 // inserted, but it's not crucial for this test.
-                                next_node.prev.store(Some(&Arc::downgrade(&new)), SeqCst);
+                                next_node.prev.store(Some(&Arc::downgrade(&new)));
                             }
                             break;
                         }
@@ -131,7 +123,7 @@ fn test_sorted_linked_list(threads_count: usize, iters_per_thread: usize) {
                     }
                 } else {
                     curr_node = next.unwrap();
-                    next = curr_node.next.load(SeqCst);
+                    next = curr_node.next.load();
                 }
             }
         }
@@ -153,9 +145,9 @@ fn test_sorted_linked_list(threads_count: usize, iters_per_thread: usize) {
 
     // Verify that no nodes were lost and that the list is in sorted order.
     let mut i = 0;
-    let mut curr_node = list.head.load::<Snapshot<_>>(SeqCst).unwrap();
+    let mut curr_node = list.head.load::<Snapshot<_>>().unwrap();
     loop {
-        let next = curr_node.next.load::<Snapshot<_>>(SeqCst);
+        let next = curr_node.next.load::<Snapshot<_>>();
         if let Some(next_node) = next {
             assert!(curr_node.val <= next_node.val);
             curr_node = next_node;
@@ -166,7 +158,7 @@ fn test_sorted_linked_list(threads_count: usize, iters_per_thread: usize) {
     }
     assert_eq!(threads_count * iters_per_thread, i);
     // Iterate in reverse order using the weak ptrs.
-    while let Some(prev_node) = curr_node.prev.upgrade::<Snapshot<_>>(SeqCst) {
+    while let Some(prev_node) = curr_node.prev.upgrade::<Snapshot<_>>() {
         assert!(curr_node.val >= prev_node.val);
         curr_node = prev_node;
     }

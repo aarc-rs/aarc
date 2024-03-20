@@ -1,6 +1,4 @@
-/// Crate-level documentation.
-#[doc = include_str!("../README.md")]
-pub mod docs {}
+#![doc = include_str!("../README.md")]
 
 pub use atomics::AtomicArc;
 pub use atomics::AtomicWeak;

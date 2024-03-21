@@ -13,5 +13,5 @@ pub trait Release {
 }
 
 pub trait Retire {
-    fn retire(ptr: *mut u8, f: Box<dyn Fn()>);
+    fn retire(ptr: *mut u8, f: fn(*mut u8));
 }

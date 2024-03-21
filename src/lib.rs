@@ -23,6 +23,7 @@ pub mod smr {
 
 pub(crate) mod utils {
     pub(crate) mod helpers;
+    pub(crate) mod spinlock;
     pub(crate) mod unrolled_linked_list;
     pub(crate) mod unsafe_arc;
 }

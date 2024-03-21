@@ -81,9 +81,9 @@ impl ProtectPtr for StandardReclaimer {
 }
 
 impl Retire for StandardReclaimer {
-    fn retire(ptr: *mut u8, f: Box<dyn Fn()>) {
+    fn retire(ptr: *mut u8, f: fn(*mut u8)) {
         let mut borrowed = Self::get_or_claim_slot().batch.borrow_mut();
-        borrowed.functions.push(f);
+        borrowed.functions.push((ptr, f));
         borrowed.ptrs.insert(ptr);
         if borrowed.functions.len() < borrowed.functions.capacity() {
             return;
@@ -199,16 +199,17 @@ impl Drop for CollectionNode {
     }
 }
 
+#[allow(clippy::type_complexity)]
 #[derive(Default)]
 struct Batch {
-    functions: Vec<Box<dyn Fn()>>,
+    functions: Vec<(*mut u8, fn(*mut u8))>,
     ptrs: HashSet<*mut u8>,
 }
 
 impl Drop for Batch {
     fn drop(&mut self) {
-        for f in self.functions.iter() {
-            (**f)();
+        for (ptr, f) in self.functions.iter() {
+            (*f)(*ptr);
         }
     }
 }
@@ -228,60 +229,58 @@ impl Drop for SlotHandle {
 mod tests {
     use crate::smr::drc::{Protect, ProtectPtr, Release, Retire};
     use crate::smr::standard_reclaimer::{Batch, StandardReclaimer};
-    use std::alloc::{dealloc, Layout};
+    use crate::utils::helpers::{alloc_box_ptr, dealloc_box_ptr};
     use std::cell::Cell;
     use std::collections::HashSet;
     use std::ptr::null_mut;
     use std::sync::atomic::Ordering::SeqCst;
 
-    fn with_flag<F: Fn(&'static mut Cell<bool>)>(f: F) {
-        let flag: &'static mut Cell<bool> = Box::leak(Box::new(Cell::new(false)));
-        let flag_ptr = flag as *mut Cell<bool> as *mut u8;
-        f(flag);
+    fn with_flag<F: Fn(*mut Cell<bool>, fn(*mut u8))>(f: F) {
+        let flag_ptr = alloc_box_ptr(Cell::new(false));
+        let flag_fn = Box::new(|ptr: *mut u8| unsafe {
+            (*(ptr as *mut Cell<bool>)).set(true);
+        });
+        f(flag_ptr, *flag_fn);
         unsafe {
-            dealloc(flag_ptr, Layout::new::<Cell<bool>>());
+            dealloc_box_ptr(flag_ptr);
         }
     }
 
     #[test]
     fn test_protect_and_retire() {
-        with_flag(|flag| {
-            let dummy_ptr = (flag as *const Cell<bool>) as *mut u8;
-
+        with_flag(|flag_ptr, flag_fn| unsafe {
             StandardReclaimer::begin_critical_section();
             let slot = StandardReclaimer::get_or_claim_slot();
             assert!(slot.is_in_critical_section.load(SeqCst));
 
-            StandardReclaimer::retire(dummy_ptr, Box::new(|| flag.set(true)));
-            assert!(!flag.get());
+            StandardReclaimer::retire(flag_ptr as *mut u8, flag_fn);
+            assert!(!(*flag_ptr).get());
 
             StandardReclaimer::end_critical_section();
             assert!(!slot.is_in_critical_section.load(SeqCst));
 
             drop(slot.batch.take());
-            assert!(flag.get());
+            assert!((*flag_ptr).get());
         });
     }
 
     #[test]
     fn test_protect_ptr_and_release() {
-        with_flag(|flag| {
-            let dummy_ptr = (flag as *const Cell<bool>) as *mut u8;
-
+        with_flag(|flag_ptr, flag_fn| unsafe {
             StandardReclaimer::get_or_claim_slot().batch.replace(Batch {
                 functions: Vec::with_capacity(1),
                 ptrs: HashSet::with_capacity(1),
             });
 
-            let handle = StandardReclaimer::protect_ptr(dummy_ptr);
-            assert_eq!(handle.ptr.load(SeqCst), dummy_ptr);
+            let handle = StandardReclaimer::protect_ptr(flag_ptr as *mut u8);
+            assert_eq!(handle.ptr.load(SeqCst), flag_ptr as *mut u8);
 
-            StandardReclaimer::retire(dummy_ptr, Box::new(|| flag.set(true)));
-            assert!(!flag.get());
+            StandardReclaimer::retire(flag_ptr as *mut u8, flag_fn);
+            assert!(!(*flag_ptr).get());
 
             handle.release();
             assert_eq!(handle.ptr.load(SeqCst), null_mut());
-            assert!(flag.get());
+            assert!((*flag_ptr).get());
         });
     }
 }

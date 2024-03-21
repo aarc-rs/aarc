@@ -395,37 +395,83 @@ mod tests {
     use crate::smr::standard_reclaimer::StandardReclaimer;
     use crate::{Arc, Weak};
     use std::cell::RefCell;
+    use std::ptr::addr_of_mut;
 
     #[test]
     fn test_arc_cascading_drop() {
+        const NODES: usize = 5;
+
         struct Node {
+            val: usize,
             _next: Option<Arc<Self>>,
+            push_on_drop: *mut Vec<usize>,
         }
-        let _node0 = Arc::new(Node {
-            _next: Some(Arc::new(Node { _next: None })),
-        });
-        unsafe {
-            StandardReclaimer::cleanup();
+        impl Drop for Node {
+            fn drop(&mut self) {
+                unsafe {
+                    (*self.push_on_drop).push(self.val);
+                }
+            }
+        }
+
+        let mut dropped_vals = Vec::new();
+        let mut head: Option<Arc<Node>> = None;
+        for i in 0..NODES {
+            head = Some(Arc::new(Node {
+                val: i,
+                _next: head.as_ref().map(Arc::clone),
+                push_on_drop: addr_of_mut!(dropped_vals),
+            }));
+        }
+
+        drop(head);
+        for i in 0..NODES {
+            assert_eq!(dropped_vals.len(), i);
+            StandardReclaimer::cleanup_owned_slot();
+            assert_eq!(dropped_vals.len(), i + 1);
+            assert_eq!(dropped_vals[i], NODES - i - 1);
         }
     }
 
     #[test]
     fn test_arc_weak_cycle() {
         struct Node {
+            val: usize,
             _prev: Option<Weak<RefCell<Self>>>,
             _next: Option<Arc<RefCell<Self>>>,
+            push_on_drop: *mut Vec<usize>,
         }
+        impl Drop for Node {
+            fn drop(&mut self) {
+                unsafe {
+                    (*self.push_on_drop).push(self.val);
+                }
+            }
+        }
+
+        let mut dropped_vals = Vec::new();
         let n0 = Arc::new(RefCell::new(Node {
+            val: 0,
             _prev: None,
             _next: None,
+            push_on_drop: addr_of_mut!(dropped_vals),
         }));
         let n1 = Arc::new(RefCell::new(Node {
+            val: 1,
             _prev: Some(Arc::downgrade(&n0)),
             _next: None,
+            push_on_drop: addr_of_mut!(dropped_vals),
         }));
         n0.borrow_mut()._next = Some(n1.clone());
-        unsafe {
-            StandardReclaimer::cleanup();
-        }
+
+        drop(n1);
+        drop(n0);
+        assert_eq!(dropped_vals.len(), 0);
+        StandardReclaimer::cleanup_owned_slot();
+        assert_eq!(dropped_vals.len(), 1);
+        assert_eq!(dropped_vals[0], 0);
+        StandardReclaimer::cleanup_owned_slot();
+        assert_eq!(dropped_vals.len(), 2);
+        assert_eq!(dropped_vals[1], 1);
     }
 }

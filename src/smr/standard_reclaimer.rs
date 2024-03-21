@@ -28,16 +28,27 @@ impl StandardReclaimer {
             }
         }
     }
+    #[allow(dead_code)]
+    pub(crate) fn cleanup_owned_slot() {
+        let handle = Self::SLOT_HANDLE.with_borrow(|h| h.0);
+        if let Some(slot) = handle {
+            drop(slot.batch.take());
+            slot.primary_list.detach_head();
+            for snapshot_ptr in slot.snapshots.iter(SeqCst) {
+                snapshot_ptr.conflicts.detach_head();
+            }
+        }
+    }
     fn get_all_slots() -> &'static UnrolledLinkedList<Slot, SLOTS_PER_NODE> {
         static SLOTS: OnceLock<UnrolledLinkedList<Slot, SLOTS_PER_NODE>> = OnceLock::new();
         SLOTS.get_or_init(UnrolledLinkedList::default)
     }
     thread_local! {
-        static SLOT_LOOKUP: RefCell<SlotHandle> = Default::default();
+        static SLOT_HANDLE: RefCell<SlotHandle> = Default::default();
     }
     fn get_or_claim_slot() -> &'static Slot {
-        Self::SLOT_LOOKUP.with_borrow_mut(|lookup| {
-            if let Some(slot) = lookup.0 {
+        Self::SLOT_HANDLE.with_borrow_mut(|handle| {
+            if let Some(slot) = handle.0 {
                 slot
             } else {
                 let claimed = Self::get_all_slots().try_for_each_with_append(|slot| {
@@ -45,7 +56,7 @@ impl StandardReclaimer {
                         .compare_exchange(false, true, SeqCst, SeqCst)
                         .is_ok()
                 });
-                lookup.0 = Some(claimed);
+                handle.0 = Some(claimed);
                 claimed
             }
         })
@@ -232,8 +243,9 @@ mod tests {
     use crate::utils::helpers::{alloc_box_ptr, dealloc_box_ptr};
     use std::cell::Cell;
     use std::collections::HashSet;
-    use std::ptr::null_mut;
     use std::sync::atomic::Ordering::SeqCst;
+
+    const TEST_PTR: *mut u8 = usize::MAX as *mut u8;
 
     fn with_flag<F: Fn(*mut Cell<bool>, fn(*mut u8))>(f: F) {
         let flag_ptr = alloc_box_ptr(Cell::new(false));
@@ -247,17 +259,24 @@ mod tests {
     }
 
     #[test]
+    fn test_protect() {
+        let slot = StandardReclaimer::get_or_claim_slot();
+        StandardReclaimer::begin_critical_section();
+        assert!(slot.is_in_critical_section.load(SeqCst));
+        StandardReclaimer::end_critical_section();
+        assert!(!slot.is_in_critical_section.load(SeqCst));
+    }
+
+    #[test]
     fn test_protect_and_retire() {
         with_flag(|flag_ptr, flag_fn| unsafe {
-            StandardReclaimer::begin_critical_section();
             let slot = StandardReclaimer::get_or_claim_slot();
-            assert!(slot.is_in_critical_section.load(SeqCst));
+            StandardReclaimer::begin_critical_section();
 
             StandardReclaimer::retire(flag_ptr as *mut u8, flag_fn);
             assert!(!(*flag_ptr).get());
 
             StandardReclaimer::end_critical_section();
-            assert!(!slot.is_in_critical_section.load(SeqCst));
 
             drop(slot.batch.take());
             assert!((*flag_ptr).get());
@@ -265,21 +284,28 @@ mod tests {
     }
 
     #[test]
+    fn test_protect_ptr() {
+        let handle = StandardReclaimer::protect_ptr(TEST_PTR);
+        assert_eq!(handle.ptr.load(SeqCst), TEST_PTR);
+        handle.release();
+        assert!(handle.ptr.load(SeqCst).is_null());
+    }
+
+    #[test]
     fn test_protect_ptr_and_release() {
         with_flag(|flag_ptr, flag_fn| unsafe {
-            StandardReclaimer::get_or_claim_slot().batch.replace(Batch {
+            let slot = StandardReclaimer::get_or_claim_slot();
+            slot.batch.replace(Batch {
                 functions: Vec::with_capacity(1),
                 ptrs: HashSet::with_capacity(1),
             });
 
             let handle = StandardReclaimer::protect_ptr(flag_ptr as *mut u8);
-            assert_eq!(handle.ptr.load(SeqCst), flag_ptr as *mut u8);
 
             StandardReclaimer::retire(flag_ptr as *mut u8, flag_fn);
             assert!(!(*flag_ptr).get());
 
             handle.release();
-            assert_eq!(handle.ptr.load(SeqCst), null_mut());
             assert!((*flag_ptr).get());
         });
     }

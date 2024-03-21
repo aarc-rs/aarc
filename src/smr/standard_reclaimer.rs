@@ -1,7 +1,7 @@
 use crate::smr::drc::{Protect, ProtectPtr, Release, Retire};
 use crate::utils::unrolled_linked_list::UnrolledLinkedList;
 use crate::utils::unsafe_arc::UnsafeArc;
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::mem;
 use std::ops::DerefMut;
@@ -33,11 +33,11 @@ impl StandardReclaimer {
         SLOTS.get_or_init(UnrolledLinkedList::default)
     }
     thread_local! {
-        static SLOT_LOOKUP: Cell<Option<&'static Slot>> = Default::default();
+        static SLOT_LOOKUP: RefCell<SlotHandle> = Default::default();
     }
     fn get_or_claim_slot() -> &'static Slot {
-        Self::SLOT_LOOKUP.with(|lookup| {
-            if let Some(slot) = lookup.get() {
+        Self::SLOT_LOOKUP.with_borrow_mut(|lookup| {
+            if let Some(slot) = lookup.0 {
                 slot
             } else {
                 let claimed = Self::get_all_slots().try_for_each_with_append(|slot| {
@@ -45,7 +45,7 @@ impl StandardReclaimer {
                         .compare_exchange(false, true, SeqCst, SeqCst)
                         .is_ok()
                 });
-                lookup.set(Some(claimed));
+                lookup.0 = Some(claimed);
                 claimed
             }
         })
@@ -209,6 +209,17 @@ impl Drop for Batch {
     fn drop(&mut self) {
         for f in self.functions.iter() {
             (**f)();
+        }
+    }
+}
+
+#[derive(Default)]
+struct SlotHandle(Option<&'static Slot>);
+
+impl Drop for SlotHandle {
+    fn drop(&mut self) {
+        if let Some(slot) = self.0 {
+            slot.is_claimed.store(false, SeqCst);
         }
     }
 }

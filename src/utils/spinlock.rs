@@ -1,8 +1,8 @@
 use crate::utils::helpers::{alloc_box_ptr, dealloc_box_ptr};
-use std::{hint, ptr};
 use std::ptr::null_mut;
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering::SeqCst;
+use std::{hint, ptr};
 
 const SPIN_FLAG: *mut u8 = usize::MAX as *mut u8;
 

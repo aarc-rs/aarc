@@ -2,6 +2,7 @@ use crate::smr::drc::{ProtectPtr, Release, Retire};
 use crate::smr::standard_reclaimer::StandardReclaimer;
 use crate::utils::helpers::alloc_box_ptr;
 use crate::utils::spinlock::Spinlock;
+use crate::utils::sticky_counter::StickyCounter;
 use std::alloc::{dealloc, Layout};
 use std::any::TypeId;
 use std::cell::RefCell;
@@ -9,8 +10,8 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::ptr::NonNull;
-use std::sync::atomic::Ordering::{Acquire, Relaxed, SeqCst};
-use std::sync::atomic::{fence, AtomicUsize};
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering::{Relaxed, SeqCst};
 use std::{mem, ptr};
 
 /// A reimplementation of [`std::sync::Arc`].
@@ -23,7 +24,8 @@ use std::{mem, ptr};
 /// - `T` must be [`Sized`] for compatability with [`AtomicArc`], which wraps [`AtomicPtr`],
 /// which also has this bound.
 ///
-/// See [`std::sync::Arc`] for per-method documentation.
+/// All methods on this struct will behave identically to their [`std::sync::Arc`] counterparts,
+/// unless otherwise noted.
 ///
 /// # Examples:
 /// ```
@@ -69,7 +71,13 @@ impl<T: 'static, R: Retire> Arc<T, R> {
     }
     #[allow(clippy::missing_safety_doc)]
     pub unsafe fn increment_strong_count(ptr: *const T) {
-        (*(ptr as *const ArcInner<T>)).increment_strong_count();
+        assert!(Self::try_increment_strong_count(ptr));
+    }
+    pub(crate) unsafe fn try_increment_strong_count(ptr: *const T) -> bool {
+        (*(ptr as *const ArcInner<T>))
+            .strong
+            .try_increment()
+            .is_ok()
     }
     pub fn into_raw(this: Self) -> *const T {
         let ptr = Self::as_ptr(&this);
@@ -81,7 +89,7 @@ impl<T: 'static, R: Retire> Arc<T, R> {
             Self {
                 ptr: NonNull::new_unchecked(alloc_box_ptr(ArcInner {
                     data,
-                    strong: AtomicUsize::new(1),
+                    strong: StickyCounter::default(),
                     weak: AtomicUsize::new(1),
                 })),
                 phantom: PhantomData,
@@ -92,17 +100,15 @@ impl<T: 'static, R: Retire> Arc<T, R> {
     pub fn ptr_eq(this: &Self, other: &Self) -> bool {
         ptr::eq(Self::as_ptr(this), Self::as_ptr(other))
     }
+    /// Note: When an `Arc` is dropped, the strong count may not be immediately decremented, so
+    /// this will likely be an overestimate.
     pub fn strong_count(this: &Self) -> usize {
-        unsafe { (*this.ptr.as_ptr()).strong.load(Relaxed) }
+        unsafe { (*this.ptr.as_ptr()).strong.load() }
     }
+    /// Note: When a `Weak` is dropped, the weak count may not be immediately decremented, so this
+    /// will likely be an overestimate.
     pub fn weak_count(this: &Self) -> usize {
         unsafe { (*this.ptr.as_ptr()).weak.load(Relaxed) - 1 }
-    }
-    pub(crate) unsafe fn try_increment_strong_count(ptr: *const T) -> bool {
-        (*(ptr as *const ArcInner<T>))
-            .strong
-            .fetch_update(Acquire, Relaxed, |n| (n != 0).then_some(n + 1))
-            .is_ok()
     }
 }
 
@@ -122,13 +128,7 @@ impl<T: 'static, R: Retire> Deref for Arc<T, R> {
 
 impl<T: 'static, R: Retire> Drop for Arc<T, R> {
     fn drop(&mut self) {
-        unsafe {
-            let inner = self.ptr.as_ptr();
-            if (*inner).strong.fetch_sub(1, SeqCst) == 1 {
-                fence(Acquire);
-                R::retire(inner as *mut u8, get_arc_drop_fn::<T, R>());
-            }
-        }
+        R::retire(self.ptr.as_ptr() as *mut u8, get_arc_drop_fn::<T, R>());
     }
 }
 
@@ -140,7 +140,8 @@ unsafe impl<T: 'static + Send + Sync, R: Retire> Sync for Arc<T, R> {}
 ///
 /// See [`Arc`] for details on how this struct differs from the standard library's.
 ///
-/// See [`std::sync::Weak`] for per-method documentation.
+/// All methods on this struct will behave identically to their [`std::sync::Weak`] counterparts,
+/// unless otherwise noted.
 pub struct Weak<T: 'static, R: Retire = StandardReclaimer> {
     ptr: NonNull<ArcInner<T>>,
     phantom_r: PhantomData<R>,
@@ -155,37 +156,23 @@ impl<T: 'static, R: Retire> Weak<T, R> {
         }
     }
     pub(crate) unsafe fn increment_weak_count(ptr: *const T) {
-        (*(ptr as *const ArcInner<T>)).increment_weak_count();
+        (*(ptr as *const ArcInner<T>)).weak.fetch_add(1, SeqCst);
     }
     pub fn into_raw(self) -> *const T {
         let ptr = Self::as_ptr(&self);
         mem::forget(self);
         ptr
     }
-    pub fn upgrade(&self) -> Option<Arc<T, R>> {
-        unsafe {
-            (*self.ptr.as_ptr())
-                .strong
-                .fetch_update(Acquire, Relaxed, |n| (n != 0).then_some(n + 1))
-                .ok()?;
-            Some(Arc {
-                ptr: self.ptr,
-                phantom: PhantomData,
-                phantom_r: PhantomData,
-            })
-        }
+    /// Note: This method is generic; the caller may specify `V` to obtain either an `Arc` or a
+    /// `Snapshot`.
+    pub fn upgrade<V: StrongPtr<T>>(&self) -> Option<V> {
+        unsafe { V::try_clone_from_raw(Self::as_ptr(self)) }
     }
 }
 
 impl<T: 'static, R: Retire> Drop for Weak<T, R> {
     fn drop(&mut self) {
-        unsafe {
-            let inner = self.ptr.as_ptr();
-            if (*inner).weak.fetch_sub(1, SeqCst) == 1 {
-                fence(Acquire);
-                R::retire(inner as *mut u8, get_weak_drop_fn::<T>());
-            }
-        }
+        R::retire(self.ptr.as_ptr() as *mut u8, get_weak_drop_fn::<T>());
     }
 }
 
@@ -205,8 +192,6 @@ unsafe impl<T: 'static + Send + Sync, R: Retire> Sync for Weak<T, R> {}
 /// A `Snapshot` should be used as a temporary variable. **It should not be used in place of
 /// [`Arc`] or [`AtomicArc`] in a data structure**. In addition, if a thread holds too
 /// many `Snapshot`s at a time, the performance of [`StandardReclaimer`] may gradually degrade.
-///
-/// The only way to obtain one is to `load` an [`AtomicArc`] or `upgrade` an [`AtomicWeak`].
 ///
 /// [`AtomicArc`]: `super::AtomicArc`
 /// [`AtomicWeak`]: `super::AtomicWeak`
@@ -237,26 +222,17 @@ impl<T: 'static, R: ProtectPtr> Drop for Snapshot<T, R> {
 }
 
 #[repr(C)]
-pub(crate) struct ArcInner<T> {
+struct ArcInner<T> {
     data: T,
-    strong: AtomicUsize,
+    strong: StickyCounter,
     weak: AtomicUsize,
-}
-
-impl<T> ArcInner<T> {
-    pub(crate) fn increment_strong_count(&self) {
-        self.strong.fetch_add(1, Relaxed);
-    }
-    pub(crate) fn increment_weak_count(&self) {
-        self.weak.fetch_add(1, Relaxed);
-    }
 }
 
 type FnLookup = HashMap<TypeId, fn(*mut u8)>;
 
 // The spinlocks are not part of the core algorithm and will only be used during initialization,
-// when a thread "sees" a type T for the first time (if it retires an Arc<T> and the type id of T
-// is not in its thread-local cache).
+// when a thread "sees" a type T for the first time (if it retires an Arc<T> or Weak<T> and the
+// type id of T is not in its thread-local cache).
 static ARC_DROP_FN_LOOKUP: Spinlock<FnLookup> = Spinlock::new();
 static WEAK_DROP_FN_LOOKUP: Spinlock<FnLookup> = Spinlock::new();
 
@@ -272,7 +248,8 @@ fn get_arc_drop_fn<T: 'static, R: Retire>() -> fn(*mut u8) {
             ARC_DROP_FN_LOOKUP.with_take_mut(|m| {
                 *m.entry(id).or_insert_with(|| {
                     |ptr: *mut u8| unsafe {
-                        if (*(ptr as *mut ArcInner<T>)).strong.load(SeqCst) == 0 {
+                        if (*(ptr as *mut ArcInner<T>)).strong.decrement() == 1 {
+                            // fence(Acquire);
                             ptr::drop_in_place(ptr as *mut T);
                             drop(Weak::<T, R>::from_raw(ptr as *const T));
                         }
@@ -290,7 +267,8 @@ fn get_weak_drop_fn<T: 'static>() -> fn(*mut u8) {
             WEAK_DROP_FN_LOOKUP.with_take_mut(|m| {
                 *m.entry(id).or_insert_with(|| {
                     |ptr: *mut u8| unsafe {
-                        if (*(ptr as *mut ArcInner<T>)).weak.load(SeqCst) == 0 {
+                        if (*(ptr as *mut ArcInner<T>)).weak.fetch_sub(1, SeqCst) == 1 {
+                            // fence(Acquire);
                             dealloc(ptr, Layout::new::<ArcInner<T>>())
                         }
                     }
@@ -325,6 +303,7 @@ impl<T: 'static, R: ProtectPtr> AsPtr<T> for Snapshot<T, R> {
 }
 
 pub trait CloneFromRaw<T> {
+    #[allow(clippy::missing_safety_doc)]
     unsafe fn clone_from_raw(ptr: *const T) -> Self;
 }
 
@@ -353,12 +332,20 @@ impl<T: 'static, R: ProtectPtr> CloneFromRaw<T> for Snapshot<T, R> {
 }
 
 pub trait TryCloneFromRaw<T>: Sized {
+    #[allow(clippy::missing_safety_doc)]
     unsafe fn try_clone_from_raw(ptr: *const T) -> Option<Self>;
 }
 
 impl<T: 'static, R: Retire> TryCloneFromRaw<T> for Arc<T, R> {
     unsafe fn try_clone_from_raw(ptr: *const T) -> Option<Self> {
-        Self::try_increment_strong_count(ptr).then_some(Self::from_raw(ptr))
+        Self::try_increment_strong_count(ptr).then(|| Self::from_raw(ptr))
+    }
+}
+
+impl<T: 'static, R: Retire> TryCloneFromRaw<T> for Weak<T, R> {
+    unsafe fn try_clone_from_raw(ptr: *const T) -> Option<Self> {
+        Self::increment_weak_count(ptr);
+        Some(Self::from_raw(ptr))
     }
 }
 
@@ -366,17 +353,30 @@ impl<T: 'static, R: ProtectPtr> TryCloneFromRaw<T> for Snapshot<T, R> {
     unsafe fn try_clone_from_raw(ptr: *const T) -> Option<Self> {
         let inner = ptr as *mut ArcInner<T>;
         let handle = R::protect_ptr(ptr as *mut u8);
-        if (*inner).strong.load(SeqCst) == 0 {
+        if (*inner).strong.load() == 0 {
             handle.release();
-            return None;
+            None
+        } else {
+            Some(Self {
+                ptr: NonNull::new_unchecked(inner),
+                phantom: PhantomData,
+                handle,
+            })
         }
-        Some(Self {
-            ptr: NonNull::new_unchecked(inner),
-            phantom: PhantomData,
-            handle,
-        })
     }
 }
+
+/// A marker trait for smart pointers that prevent deallocation of the object: [`Arc`] and
+/// [`Snapshot`], but not [`Weak`].
+pub trait StrongPtr<T>: Deref + SmartPtr<T> {}
+
+impl<T, X> StrongPtr<T> for X where X: Deref + SmartPtr<T> {}
+
+/// A marker trait representing all smart pointers in this crate: [`Arc`], [`Weak`], and
+/// [`Snapshot`].
+pub trait SmartPtr<T>: AsPtr<T> + CloneFromRaw<T> + TryCloneFromRaw<T> {}
+
+impl<T, X> SmartPtr<T> for X where X: AsPtr<T> + CloneFromRaw<T> + TryCloneFromRaw<T> {}
 
 impl<T: 'static, R: ProtectPtr + Retire> From<&Arc<T, R>> for Snapshot<T, R> {
     fn from(value: &Arc<T, R>) -> Self {
@@ -392,8 +392,8 @@ impl<T: 'static, R: ProtectPtr + Retire> From<&Snapshot<T, R>> for Arc<T, R> {
 
 #[cfg(test)]
 mod tests {
+    use crate::smart_ptrs::{Arc, Weak};
     use crate::smr::standard_reclaimer::StandardReclaimer;
-    use crate::{Arc, Weak};
     use std::cell::RefCell;
     use std::ptr::addr_of_mut;
 

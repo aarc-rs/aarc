@@ -2,15 +2,15 @@
 
 pub use atomics::AtomicArc;
 pub use atomics::AtomicWeak;
-pub use atomics::Shared;
-pub use atomics::Strong;
-pub use shared_ptrs::Arc;
-pub use shared_ptrs::AsPtr;
-pub use shared_ptrs::Snapshot;
-pub use shared_ptrs::Weak;
+pub use smart_ptrs::Arc;
+pub use smart_ptrs::AsPtr;
+pub use smart_ptrs::SmartPtr;
+pub use smart_ptrs::Snapshot;
+pub use smart_ptrs::StrongPtr;
+pub use smart_ptrs::Weak;
 
 pub(crate) mod atomics;
-pub(crate) mod shared_ptrs;
+pub(crate) mod smart_ptrs;
 
 /// Traits and structs pertaining to safe memory reclamation.
 pub mod smr {
@@ -24,6 +24,7 @@ pub mod smr {
 pub(crate) mod utils {
     pub(crate) mod helpers;
     pub(crate) mod spinlock;
+    pub(crate) mod sticky_counter;
     pub(crate) mod unrolled_linked_list;
     pub(crate) mod unsafe_arc;
 }

@@ -7,7 +7,7 @@ use std::mem;
 use std::ops::DerefMut;
 use std::ptr::null_mut;
 use std::sync::atomic::Ordering::SeqCst;
-use std::sync::atomic::{AtomicBool, AtomicPtr};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize};
 use std::sync::OnceLock;
 
 const SLOTS_PER_NODE: usize = 32;
@@ -66,14 +66,15 @@ impl StandardReclaimer {
 impl Protect for StandardReclaimer {
     fn begin_critical_section() {
         Self::get_or_claim_slot()
-            .is_in_critical_section
-            .store(true, SeqCst);
+            .critical_sections
+            .fetch_add(1, SeqCst);
     }
 
     fn end_critical_section() {
         let slot = Self::get_or_claim_slot();
-        slot.is_in_critical_section.store(false, SeqCst);
-        slot.primary_list.detach_head();
+        if slot.critical_sections.fetch_sub(1, SeqCst) == 1 {
+            slot.primary_list.detach_head();
+        }
     }
 }
 
@@ -112,7 +113,7 @@ impl Retire for StandardReclaimer {
         drop(borrowed);
         let batch_arc = UnsafeArc::new(batch, 1);
         for slot in all_slots.iter(SeqCst) {
-            if slot.is_in_critical_section.load(SeqCst) {
+            if slot.critical_sections.load(SeqCst) > 0 {
                 // If a thread is in a critical section, it must be made aware of any retirements.
                 // The snapshots will be checked when that thread exits the critical section.
                 slot.primary_list.insert(batch_arc.clone(), Some(slot));
@@ -138,7 +139,7 @@ struct Slot {
     snapshots: UnrolledLinkedList<SnapshotPtr, SNAPSHOT_PTRS_PER_NODE>,
     // TODO: snapshots could share entries if their pointers are equal
     // snapshots_by_addr_count: RefCell<HashMap<usize, usize>>,
-    is_in_critical_section: AtomicBool,
+    critical_sections: AtomicUsize,
     is_claimed: AtomicBool,
 }
 
@@ -262,9 +263,11 @@ mod tests {
     fn test_protect() {
         let slot = StandardReclaimer::get_or_claim_slot();
         StandardReclaimer::begin_critical_section();
-        assert!(slot.is_in_critical_section.load(SeqCst));
+        StandardReclaimer::begin_critical_section();
+        assert_eq!(slot.critical_sections.load(SeqCst), 2);
         StandardReclaimer::end_critical_section();
-        assert!(!slot.is_in_critical_section.load(SeqCst));
+        StandardReclaimer::end_critical_section();
+        assert_eq!(slot.critical_sections.load(SeqCst), 0);
     }
 
     #[test]

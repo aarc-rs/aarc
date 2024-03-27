@@ -1,7 +1,6 @@
 use crate::smr::drc::{ProtectPtr, Release, Retire};
 use crate::smr::standard_reclaimer::StandardReclaimer;
 use crate::utils::helpers::alloc_box_ptr;
-use crate::utils::spinlock::Spinlock;
 use crate::utils::sticky_counter::StickyCounter;
 use std::alloc::{dealloc, Layout};
 use std::any::TypeId;
@@ -12,6 +11,7 @@ use std::ops::Deref;
 use std::ptr::NonNull;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Relaxed, SeqCst};
+use std::sync::{Mutex, OnceLock};
 use std::{mem, ptr};
 
 /// A reimplementation of [`std::sync::Arc`].
@@ -128,7 +128,7 @@ impl<T: 'static, R: Retire> Deref for Arc<T, R> {
 
 impl<T: 'static, R: Retire> Drop for Arc<T, R> {
     fn drop(&mut self) {
-        R::retire(self.ptr.as_ptr() as *mut u8, get_arc_drop_fn::<T, R>());
+        R::retire(self.ptr.as_ptr() as *mut u8, get_drop_fn::<T, R, true>());
     }
 }
 
@@ -172,7 +172,7 @@ impl<T: 'static, R: Retire> Weak<T, R> {
 
 impl<T: 'static, R: Retire> Drop for Weak<T, R> {
     fn drop(&mut self) {
-        R::retire(self.ptr.as_ptr() as *mut u8, get_weak_drop_fn::<T>());
+        R::retire(self.ptr.as_ptr() as *mut u8, get_drop_fn::<T, R, false>());
     }
 }
 
@@ -228,25 +228,23 @@ struct ArcInner<T> {
     weak: AtomicUsize,
 }
 
-type FnLookup = HashMap<TypeId, fn(*mut u8)>;
+type FnLookup = HashMap<(TypeId, bool), fn(*mut u8)>;
 
-// The spinlocks are not part of the core algorithm and will only be used during initialization,
-// when a thread "sees" a type T for the first time (if it retires an Arc<T> or Weak<T> and the
-// type id of T is not in its thread-local cache).
-static ARC_DROP_FN_LOOKUP: Spinlock<FnLookup> = Spinlock::new();
-static WEAK_DROP_FN_LOOKUP: Spinlock<FnLookup> = Spinlock::new();
+// The mutex will only be used during initialization, in std environments, when a thread "sees" a
+// type T for the first time.
+static DROP_FN_LOOKUP: OnceLock<Mutex<FnLookup>> = OnceLock::new();
 
 thread_local! {
-    static LOCAL_ARC_DROP_FN_LOOKUP: RefCell<FnLookup> = RefCell::default();
-    static LOCAL_WEAK_DROP_FN_LOOKUP: RefCell<FnLookup> = RefCell::default();
+    static LOCAL_DROP_FN_LOOKUP: RefCell<FnLookup> = RefCell::default();
 }
 
-fn get_arc_drop_fn<T: 'static, R: Retire>() -> fn(*mut u8) {
-    LOCAL_ARC_DROP_FN_LOOKUP.with_borrow_mut(|lookup| {
-        let id = TypeId::of::<T>();
-        *lookup.entry(id).or_insert_with(|| {
-            ARC_DROP_FN_LOOKUP.with_take_mut(|m| {
-                *m.entry(id).or_insert_with(|| {
+fn get_drop_fn<T: 'static, R: Retire, const IS_ARC: bool>() -> fn(*mut u8) {
+    LOCAL_DROP_FN_LOOKUP.with_borrow_mut(|lookup| {
+        let key = (TypeId::of::<T>(), IS_ARC);
+        *lookup.entry(key).or_insert_with(|| {
+            let mut m = DROP_FN_LOOKUP.get_or_init(Mutex::default).lock().unwrap();
+            *m.entry(key).or_insert_with(|| {
+                if IS_ARC {
                     |ptr: *mut u8| unsafe {
                         if (*(ptr as *mut ArcInner<T>)).strong.decrement() == 1 {
                             // fence(Acquire);
@@ -254,25 +252,14 @@ fn get_arc_drop_fn<T: 'static, R: Retire>() -> fn(*mut u8) {
                             drop(Weak::<T, R>::from_raw(ptr as *const T));
                         }
                     }
-                })
-            })
-        })
-    })
-}
-
-fn get_weak_drop_fn<T: 'static>() -> fn(*mut u8) {
-    LOCAL_WEAK_DROP_FN_LOOKUP.with_borrow_mut(|lookup| {
-        let id = TypeId::of::<T>();
-        *lookup.entry(id).or_insert_with(|| {
-            WEAK_DROP_FN_LOOKUP.with_take_mut(|m| {
-                *m.entry(id).or_insert_with(|| {
+                } else {
                     |ptr: *mut u8| unsafe {
                         if (*(ptr as *mut ArcInner<T>)).weak.fetch_sub(1, SeqCst) == 1 {
                             // fence(Acquire);
                             dealloc(ptr, Layout::new::<ArcInner<T>>())
                         }
                     }
-                })
+                }
             })
         })
     })

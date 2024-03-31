@@ -9,10 +9,12 @@
 
 - retire logic: use fn ptrs and cache instead of boxed Fns to eliminate unnecessary allocations.
 - marker traits: renamed to "SmartPtr" and "StrongPtr".
+- smr traits: use RAII guards instead of functions / Release trait for a more intuitive interface.
 
 ### Removed
 
 - custom Arc and Weak implementations.
+- unnecessary Release trait.
 
 ### Fixed
 

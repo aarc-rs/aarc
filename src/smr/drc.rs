@@ -1,15 +1,11 @@
 pub trait Protect {
-    fn begin_critical_section();
-    fn end_critical_section();
+    type Guard;
+    fn protect() -> Self::Guard;
 }
 
 pub trait ProtectPtr {
-    type ProtectionHandle: 'static + Release;
-    fn protect_ptr(ptr: *mut u8) -> &'static Self::ProtectionHandle;
-}
-
-pub trait Release {
-    fn release(&self);
+    type Guard;
+    fn protect_ptr(ptr: *mut u8) -> Self::Guard;
 }
 
 pub trait Retire {

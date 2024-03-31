@@ -1,4 +1,4 @@
-use crate::smr::drc::{Protect, ProtectPtr, Release, Retire};
+use crate::smr::drc::{Protect, ProtectPtr, Retire};
 use crate::utils::unrolled_linked_list::UnrolledLinkedList;
 use crate::utils::unsafe_arc::UnsafeArc;
 use std::cell::RefCell;
@@ -63,32 +63,52 @@ impl StandardReclaimer {
     }
 }
 
-impl Protect for StandardReclaimer {
-    fn begin_critical_section() {
-        Self::get_or_claim_slot()
-            .critical_sections
-            .fetch_add(1, SeqCst);
-    }
+pub struct RegionGuard {
+    slot: &'static Slot,
+}
 
-    fn end_critical_section() {
-        let slot = Self::get_or_claim_slot();
-        if slot.critical_sections.fetch_sub(1, SeqCst) == 1 {
-            slot.primary_list.detach_head();
+impl Drop for RegionGuard {
+    fn drop(&mut self) {
+        if self.slot.critical_sections.fetch_sub(1, SeqCst) == 1 {
+            self.slot.primary_list.detach_head();
         }
     }
 }
 
+impl Protect for StandardReclaimer {
+    type Guard = RegionGuard;
+
+    fn protect() -> Self::Guard {
+        let slot = Self::get_or_claim_slot();
+        slot.critical_sections.fetch_add(1, SeqCst);
+        RegionGuard { slot }
+    }
+}
+
+pub struct PtrGuard {
+    snapshot_ptr: &'static SnapshotPtr,
+}
+
+impl Drop for PtrGuard {
+    fn drop(&mut self) {
+        self.snapshot_ptr.ptr.store(null_mut(), SeqCst);
+        self.snapshot_ptr.conflicts.detach_head();
+    }
+}
+
 impl ProtectPtr for StandardReclaimer {
-    type ProtectionHandle = SnapshotPtr;
-    fn protect_ptr(ptr: *mut u8) -> &'static SnapshotPtr {
+    type Guard = PtrGuard;
+
+    fn protect_ptr(ptr: *mut u8) -> Self::Guard {
         // TODO: don't search from the beginning every time
-        Self::get_or_claim_slot()
+        let snapshot_ptr = Self::get_or_claim_slot()
             .snapshots
             .try_for_each_with_append(|s| {
                 s.ptr
                     .compare_exchange(null_mut(), ptr, SeqCst, SeqCst)
                     .is_ok()
-            })
+            });
+        PtrGuard { snapshot_ptr }
     }
 }
 
@@ -150,13 +170,6 @@ unsafe impl Sync for Slot {}
 pub struct SnapshotPtr {
     ptr: AtomicPtr<u8>,
     conflicts: CollectionList,
-}
-
-impl Release for SnapshotPtr {
-    fn release(&self) {
-        self.ptr.store(null_mut(), SeqCst);
-        self.conflicts.detach_head();
-    }
 }
 
 #[derive(Default)]
@@ -239,7 +252,7 @@ impl Drop for SlotHandle {
 
 #[cfg(test)]
 mod tests {
-    use crate::smr::drc::{Protect, ProtectPtr, Release, Retire};
+    use crate::smr::drc::{Protect, ProtectPtr, Retire};
     use crate::smr::standard_reclaimer::{Batch, StandardReclaimer};
     use crate::utils::helpers::{alloc_box_ptr, dealloc_box_ptr};
     use std::cell::Cell;
@@ -262,11 +275,11 @@ mod tests {
     #[test]
     fn test_protect() {
         let slot = StandardReclaimer::get_or_claim_slot();
-        StandardReclaimer::begin_critical_section();
-        StandardReclaimer::begin_critical_section();
+        let guard1 = StandardReclaimer::protect();
+        let guard2 = StandardReclaimer::protect();
         assert_eq!(slot.critical_sections.load(SeqCst), 2);
-        StandardReclaimer::end_critical_section();
-        StandardReclaimer::end_critical_section();
+        drop(guard1);
+        drop(guard2);
         assert_eq!(slot.critical_sections.load(SeqCst), 0);
     }
 
@@ -274,12 +287,12 @@ mod tests {
     fn test_protect_and_retire() {
         with_flag(|flag_ptr, flag_fn| unsafe {
             let slot = StandardReclaimer::get_or_claim_slot();
-            StandardReclaimer::begin_critical_section();
+            let guard = StandardReclaimer::protect();
 
             StandardReclaimer::retire(flag_ptr as *mut u8, flag_fn);
             assert!(!(*flag_ptr).get());
 
-            StandardReclaimer::end_critical_section();
+            drop(guard);
 
             drop(slot.batch.take());
             assert!((*flag_ptr).get());
@@ -288,10 +301,11 @@ mod tests {
 
     #[test]
     fn test_protect_ptr() {
-        let handle = StandardReclaimer::protect_ptr(TEST_PTR);
-        assert_eq!(handle.ptr.load(SeqCst), TEST_PTR);
-        handle.release();
-        assert!(handle.ptr.load(SeqCst).is_null());
+        let guard = StandardReclaimer::protect_ptr(TEST_PTR);
+        let tmp = guard.snapshot_ptr;
+        assert_eq!(tmp.ptr.load(SeqCst), TEST_PTR);
+        drop(guard);
+        assert!(tmp.ptr.load(SeqCst).is_null());
     }
 
     #[test]
@@ -303,12 +317,12 @@ mod tests {
                 ptrs: HashSet::with_capacity(1),
             });
 
-            let handle = StandardReclaimer::protect_ptr(flag_ptr as *mut u8);
+            let guard = StandardReclaimer::protect_ptr(flag_ptr as *mut u8);
 
             StandardReclaimer::retire(flag_ptr as *mut u8, flag_fn);
             assert!(!(*flag_ptr).get());
 
-            handle.release();
+            drop(guard);
             assert!((*flag_ptr).get());
         });
     }

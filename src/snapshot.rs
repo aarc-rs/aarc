@@ -1,5 +1,5 @@
 use crate::atomics::{AsPtr, CloneFromRaw, TryCloneFromRaw};
-use crate::smr::drc::{ProtectPtr, Release};
+use crate::smr::drc::ProtectPtr;
 use crate::smr::standard_reclaimer::StandardReclaimer;
 use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
@@ -28,7 +28,7 @@ use std::sync::{Arc, Weak};
 pub struct Snapshot<T, R: ProtectPtr = StandardReclaimer> {
     ptr: NonNull<T>,
     phantom: PhantomData<T>,
-    handle: &'static R::ProtectionHandle,
+    _guard: R::Guard,
 }
 
 impl<T, R: ProtectPtr> Deref for Snapshot<T, R> {
@@ -36,12 +36,6 @@ impl<T, R: ProtectPtr> Deref for Snapshot<T, R> {
 
     fn deref(&self) -> &Self::Target {
         unsafe { &*(self.ptr.as_ptr()) }
-    }
-}
-
-impl<T, R: ProtectPtr> Drop for Snapshot<T, R> {
-    fn drop(&mut self) {
-        self.handle.release();
     }
 }
 
@@ -56,22 +50,21 @@ impl<T, R: ProtectPtr> CloneFromRaw<T> for Snapshot<T, R> {
         Self {
             ptr: NonNull::new_unchecked(ptr.cast_mut()),
             phantom: PhantomData,
-            handle: R::protect_ptr(ptr as *mut u8),
+            _guard: R::protect_ptr(ptr as *mut u8),
         }
     }
 }
 
 impl<T, R: ProtectPtr> TryCloneFromRaw<T> for Snapshot<T, R> {
     unsafe fn try_clone_from_raw(ptr: *const T) -> Option<Self> {
-        let handle = R::protect_ptr(ptr as *mut u8);
+        let guard = R::protect_ptr(ptr as *mut u8);
         if ManuallyDrop::new(Weak::from_raw(ptr)).strong_count() == 0 {
-            handle.release();
             None
         } else {
             Some(Self {
                 ptr: NonNull::new_unchecked(ptr.cast_mut()),
                 phantom: PhantomData,
-                handle,
+                _guard: guard,
             })
         }
     }

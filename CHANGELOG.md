@@ -1,24 +1,13 @@
-## v0.2.0 - 2024-XX-XX
+## v0.2.0 - 2024-03-31
 
-### Added
-
-- thread-local handles to vacate slots automatically on exit.
-- support for multiple critical sections per thread (e.g. during signal handling).
-
-### Changed
-
-- retire logic: use fn ptrs and cache instead of boxed Fns to eliminate unnecessary allocations.
-- marker traits: renamed to "SmartPtr" and "StrongPtr".
-- smr traits: use RAII guards instead of functions / Release trait for a more intuitive interface.
-
-### Removed
-
-- custom Arc and Weak implementations.
-- unnecessary Release trait.
-
-### Fixed
-
-- incorrect Send / Sync auto impls on atomics: they were previously omitted.
-- memory ordering parameters: removed from all methods due to potential UB if the user did not
+* removed custom Arc and Weak implementations.
+* removed memory ordering parameters from all methods due to potential UB if the user did not
   provide strict enough orderings.
-- bug in compare_exchange methods: potential UB in the failure case.
+* renamed marker traits to "SmartPtr" and "StrongPtr".
+* fixed incorrect Send / Sync auto impls on atomics: they were previously omitted.
+* fixed bug in compare_exchange methods: potential UB in the failure case.
+* added support for multiple critical sections per thread (e.g. during signal handling).
+* added thread-local handles to vacate slots automatically on exit.
+* replaced boxed Fns with fn ptrs and cache to eliminate unnecessary allocations.
+* changed smr trait methods to use RAII guards instead of functions.
+* removed unnecessary Release trait.

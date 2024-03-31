@@ -167,7 +167,7 @@ unsafe impl Send for Slot {}
 unsafe impl Sync for Slot {}
 
 #[derive(Default)]
-pub struct SnapshotPtr {
+struct SnapshotPtr {
     ptr: AtomicPtr<u8>,
     conflicts: CollectionList,
 }

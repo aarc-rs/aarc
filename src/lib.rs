@@ -1,16 +1,14 @@
 #![doc = include_str!("../README.md")]
 
+pub use atomics::AsPtr;
 pub use atomics::AtomicArc;
 pub use atomics::AtomicWeak;
-pub use smart_ptrs::Arc;
-pub use smart_ptrs::AsPtr;
-pub use smart_ptrs::SmartPtr;
-pub use smart_ptrs::Snapshot;
-pub use smart_ptrs::StrongPtr;
-pub use smart_ptrs::Weak;
+pub use atomics::SmartPtr;
+pub use atomics::StrongPtr;
+pub use snapshot::Snapshot;
 
 pub(crate) mod atomics;
-pub(crate) mod smart_ptrs;
+pub(crate) mod snapshot;
 
 /// Traits and structs pertaining to safe memory reclamation.
 pub mod smr {
@@ -23,7 +21,6 @@ pub mod smr {
 
 pub(crate) mod utils {
     pub(crate) mod helpers;
-    pub(crate) mod sticky_counter;
     pub(crate) mod unrolled_linked_list;
     pub(crate) mod unsafe_arc;
 }

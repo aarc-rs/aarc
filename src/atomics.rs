@@ -1,35 +1,45 @@
-use crate::smart_ptrs::{CloneFromRaw, SmartPtr, StrongPtr};
 use crate::smr::drc::{Protect, ProtectPtr, Retire};
 use crate::smr::standard_reclaimer::StandardReclaimer;
-use crate::{Arc, AsPtr, Snapshot, Weak};
+use crate::Snapshot;
+use std::any::TypeId;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::marker::PhantomData;
+use std::mem::ManuallyDrop;
+use std::ops::Deref;
 use std::ptr;
 use std::ptr::{null, null_mut};
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 /// An [`Arc`] with an atomically updatable pointer.
 ///
-/// An `AtomicArc` contributes to the strong count of the pointed-to allocation (if any). It does
-/// not implement [`Deref`][`std::ops::Deref`], so a method like `load` must be used to obtain an
-/// [`Arc`] or a [`Snapshot`] through which the data can be read.
-///
-/// Unlike [`Arc`], `AtomicArc` can store [`None`]. Notice that a hypothetical
-/// `Option<AtomicArc<T>>` would be pointless, as the variable would lose its atomicity.
-/// Thus, `AtomicArc` uses the
-/// [null pointer optimization](https://doc.rust-lang.org/std/option/index.html#representation)
-/// to intrinsically support [`Option`].
-///
-/// All methods use load-acquire, store-release semantics.
+/// Usage notes:
+/// * An `AtomicArc` can store [`None`]. A hypothetical `Option<AtomicArc<T>>` would be pointless,
+/// as the variable would lose its atomicity, so the
+/// [null pointer optimization](https://doc.rust-lang.org/std/option/index.html#representation) is
+/// utilized to intrinsically support [`Option`].
+/// * An `AtomicArc` contributes to the strong count of the pointed-to allocation, if any. However,
+/// it does not implement [`Deref`], so a method like `load` must be used to obtain an [`Arc`] or a
+/// [`Snapshot`] through which the data can be read.
+/// * `T` must be [`Sized`] for compatibility with [`AtomicPtr`].
+/// * All methods use load-acquire, store-release semantics.
+/// * When an `AtomicArc` is dropped or updated, the strong count may not be immediately
+/// decremented. Thus:
+///     * `T` must be `'static` to support delayed deallocations.
+///     * [`Arc::strong_count`] will likely be an overestimate.
+
 ///
 /// # Examples
 /// ```
-/// use aarc::{Arc, AtomicArc, Snapshot};
+/// use std::sync::Arc;
+/// use aarc::{AtomicArc, Snapshot};
 ///
 /// let atomic = AtomicArc::new(Some(53)); // +1 strong count on val 53
 ///
-/// let snapshot53 = atomic.load::<Snapshot<_>>(); // snapshot doesn't affect counts
-/// assert_eq!(*snapshot53.unwrap(), 53);
+/// let snapshot53 = atomic.load::<Snapshot<_>>().unwrap(); // snapshot doesn't affect counts
+/// assert_eq!(*snapshot53, 53);
 ///
 /// let arc53 = atomic.load::<Arc<_>>().unwrap(); // +1 strong count on val 53
 /// assert_eq!(*arc53, 53);
@@ -80,38 +90,35 @@ impl<T: 'static, R: Protect + Retire> AtomicArc<T, R> {
     {
         let c: *const T = current.map_or(null(), C::as_ptr);
         let n: *const T = new.map_or(null(), N::as_ptr);
-        let mut to_drop: *mut T = null_mut();
-        let result = with_critical_section::<R, _, _>(|| {
-            match self
-                .ptr
-                .compare_exchange(c.cast_mut(), n.cast_mut(), AcqRel, Acquire)
-            {
-                Ok(before) => unsafe {
-                    if !n.is_null() && !ptr::eq(n, before) {
-                        Arc::<_, R>::increment_strong_count(n);
-                        to_drop = before;
-                    }
-                    Ok(())
-                },
-                Err(before) => unsafe {
-                    if before.is_null() {
-                        Err(None)
-                    } else {
-                        Err(Some(V::clone_from_raw(before)))
-                    }
-                },
-            }
-        });
-        if !to_drop.is_null() {
-            unsafe {
-                drop(Arc::<_, R>::from_raw(to_drop));
-            }
+        let mut to_retire: *mut T = null_mut();
+        R::begin_critical_section();
+        let result = match self
+            .ptr
+            .compare_exchange(c.cast_mut(), n.cast_mut(), AcqRel, Acquire)
+        {
+            Ok(before) => unsafe {
+                if !n.is_null() && !ptr::eq(n, before) {
+                    Arc::increment_strong_count(n);
+                    to_retire = before;
+                }
+                Ok(())
+            },
+            Err(before) => unsafe {
+                if before.is_null() {
+                    Err(None)
+                } else {
+                    Err(Some(V::clone_from_raw(before)))
+                }
+            },
+        };
+        R::end_critical_section();
+        if !to_retire.is_null() {
+            R::retire(to_retire as *mut u8, get_drop_fn::<T, true>());
         }
         result
     }
 
-    /// Loads the pointer and returns the desired type (`Arc` or `Snapshot`), or [`None`] if it is
-    /// null.
+    /// Loads and returns the desired smart pointer type (or [`None`] if it is null).
     pub fn load<V: SmartPtr<T>>(&self) -> Option<V> {
         with_critical_section::<R, _, _>(|| unsafe {
             let ptr = self.ptr.load(Acquire);
@@ -125,17 +132,16 @@ impl<T: 'static, R: Protect + Retire> AtomicArc<T, R> {
 
     /// Stores `new`'s pointer (or [`None`]) into `self`.
     pub fn store<N: StrongPtr<T>>(&self, new: Option<&N>) {
+        // TODO: rework this method to possibly take ownership of new (avoid increment).
         let ptr: *const T = new.map_or(null(), N::as_ptr);
         if !ptr.is_null() {
             unsafe {
-                Arc::<_, R>::increment_strong_count(ptr);
+                Arc::increment_strong_count(ptr);
             }
         }
         let before = self.ptr.swap(ptr.cast_mut(), AcqRel);
         if !before.is_null() {
-            unsafe {
-                drop(Arc::<_, R>::from_raw(before));
-            }
+            R::retire(before as *mut u8, get_drop_fn::<T, true>());
         }
     }
 }
@@ -146,7 +152,7 @@ impl<T: 'static, R: Protect + Retire> Clone for AtomicArc<T, R> {
             let ptr = self.ptr.load(Acquire);
             if !ptr.is_null() {
                 unsafe {
-                    Arc::<_, R>::increment_strong_count(ptr);
+                    Arc::increment_strong_count(ptr);
                 }
             }
             ptr
@@ -173,9 +179,7 @@ impl<T: 'static, R: Protect + Retire> Drop for AtomicArc<T, R> {
     fn drop(&mut self) {
         let ptr = self.ptr.load(Relaxed);
         if !ptr.is_null() {
-            unsafe {
-                drop(Arc::<_, R>::from_raw(ptr));
-            }
+            R::retire(ptr as *mut u8, get_drop_fn::<T, true>());
         }
     }
 }
@@ -186,26 +190,24 @@ unsafe impl<T: 'static + Send + Sync, R: Protect + Retire> Sync for AtomicArc<T,
 
 /// A [`Weak`] with an atomically updatable pointer.
 ///
-/// `AtomicWeak` is similar to [`AtomicArc`], but it contributes to the weak count instead of the
-/// strong count.
+/// See [`AtomicArc`] for usage notes. `AtomicWeak` differs only in that it contributes to the weak
+/// count instead of the strong count.
 ///
 /// # Examples
 /// ```
-/// use aarc::{Arc, AtomicWeak, Snapshot};
+/// use std::sync::Arc;
+/// use aarc::{AtomicWeak, Snapshot};
 ///
 /// let arc1 = Arc::new(53); // +1 strong count
 ///
-/// let atomic = AtomicWeak::default();
-/// atomic.store(Some(&arc1)); // +1 weak count
+/// let atomic = AtomicWeak::<_>::from(&arc1); // +1 weak count
 ///
-/// let snapshot = atomic.upgrade::<Snapshot<_>>(); // snapshot doesn't affect counts
-/// assert_eq!(*snapshot.unwrap(), 53);
+/// let snapshot = atomic.upgrade::<Snapshot<_>>().unwrap(); // snapshot doesn't affect counts
+/// assert_eq!(*snapshot, 53);
 ///
 /// let weak = atomic.load().unwrap(); // +1 weak count
-/// let arc2 = weak.upgrade::<Arc<_>>().unwrap(); // +1 strong count
-/// assert_eq!(*arc2, 53);
-/// assert_eq!(Arc::strong_count(&arc2), 2);
-/// assert_eq!(Arc::weak_count(&arc2), 2);
+/// assert_eq!(Arc::strong_count(&arc1), 1);
+/// assert_eq!(Arc::weak_count(&arc1), 2);
 /// ```
 pub struct AtomicWeak<T: 'static, R: Protect + Retire = StandardReclaimer> {
     ptr: AtomicPtr<T>,
@@ -214,50 +216,47 @@ pub struct AtomicWeak<T: 'static, R: Protect + Retire = StandardReclaimer> {
 
 impl<T: 'static, R: Protect + Retire> AtomicWeak<T, R> {
     /// See [`AtomicArc::compare_exchange`]. This method behaves similarly, except that the return
-    /// type for the failure case cannot be specified by the caller; it must be a [`Weak`].
+    /// type for the failure case cannot be specified by the caller; it will be a [`Weak`].
     pub fn compare_exchange<C, N>(
         &self,
         current: Option<&C>,
         new: Option<&N>,
-    ) -> Result<(), Option<Weak<T, R>>>
+    ) -> Result<(), Option<Weak<T>>>
     where
         C: SmartPtr<T>,
         N: SmartPtr<T>,
     {
         let c: *const T = current.map_or(null(), C::as_ptr);
         let n: *const T = new.map_or(null(), N::as_ptr);
-        let mut to_drop: *mut T = null_mut();
-        let result = with_critical_section::<R, _, _>(|| {
-            match self
-                .ptr
-                .compare_exchange(c.cast_mut(), n.cast_mut(), AcqRel, Acquire)
-            {
-                Ok(before) => unsafe {
-                    if !n.is_null() && !ptr::eq(n, before) {
-                        Weak::<_, R>::increment_weak_count(n);
-                        to_drop = before;
-                    }
-                    Ok(())
-                },
-                Err(before) => unsafe {
-                    if before.is_null() {
-                        Err(None)
-                    } else {
-                        Err(Some(Weak::<_, R>::clone_from_raw(before)))
-                    }
-                },
-            }
-        });
-        if !to_drop.is_null() {
-            unsafe {
-                drop(Weak::<_, R>::from_raw(to_drop));
-            }
+        let mut to_retire: *mut T = null_mut();
+        R::begin_critical_section();
+        let result = match self
+            .ptr
+            .compare_exchange(c.cast_mut(), n.cast_mut(), AcqRel, Acquire)
+        {
+            Ok(before) => unsafe {
+                if !n.is_null() && !ptr::eq(n, before) {
+                    _ = ManuallyDrop::new(Weak::from_raw(before)).clone();
+                    to_retire = before;
+                }
+                Ok(())
+            },
+            Err(before) => unsafe {
+                if before.is_null() {
+                    Err(None)
+                } else {
+                    Err(Some(Weak::clone_from_raw(before)))
+                }
+            },
+        };
+        if !to_retire.is_null() {
+            R::retire(to_retire as *mut u8, get_drop_fn::<T, false>());
         }
         result
     }
 
-    /// Loads the pointer and returns a [`Weak`], or [`None`] if it is null.
-    pub fn load(&self) -> Option<Weak<T, R>> {
+    /// Loads the pointer and returns a [`Weak`] (or [`None`] if it is null).
+    pub fn load(&self) -> Option<Weak<T>> {
         with_critical_section::<R, _, _>(|| {
             let ptr = self.ptr.load(Acquire);
             if ptr.is_null() {
@@ -273,19 +272,17 @@ impl<T: 'static, R: Protect + Retire> AtomicWeak<T, R> {
         let ptr: *const T = new.map_or(null(), N::as_ptr);
         if !ptr.is_null() {
             unsafe {
-                Weak::<_, R>::increment_weak_count(ptr);
+                _ = ManuallyDrop::new(Weak::from_raw(ptr)).clone();
             }
         }
         let before = self.ptr.swap(ptr.cast_mut(), AcqRel);
         if !before.is_null() {
-            unsafe {
-                drop(Weak::<_, R>::from_raw(before));
-            }
+            R::retire(before as *mut u8, get_drop_fn::<T, false>());
         }
     }
 
-    /// Returns a [`StrongPtr`] (an [`Arc`] or a [`Snapshot`]) if the strong count is at least one.
-    /// Analogous to [`std::sync::Weak::upgrade`].
+    /// Loads a [`StrongPtr`] (an [`Arc`] or a [`Snapshot`]) if the strong count is at least one.
+    /// Analogous to [`Weak::upgrade`].
     pub fn upgrade<V: StrongPtr<T>>(&self) -> Option<V> {
         with_critical_section::<R, _, _>(|| {
             let ptr = self.ptr.load(Acquire);
@@ -304,7 +301,7 @@ impl<T: 'static, R: Protect + Retire> Clone for AtomicWeak<T, R> {
             let ptr = self.ptr.load(Acquire);
             if !ptr.is_null() {
                 unsafe {
-                    Weak::<_, R>::increment_weak_count(ptr);
+                    _ = ManuallyDrop::new(Weak::from_raw(ptr)).clone();
                 }
             }
             ptr
@@ -329,9 +326,7 @@ impl<T: 'static, R: Protect + Retire> Drop for AtomicWeak<T, R> {
     fn drop(&mut self) {
         let ptr = self.ptr.load(Relaxed);
         if !ptr.is_null() {
-            unsafe {
-                drop(Weak::<_, R>::from_raw(ptr));
-            }
+            R::retire(ptr as *mut u8, get_drop_fn::<T, false>());
         }
     }
 }
@@ -340,7 +335,7 @@ impl<T: 'static, R: Protect + ProtectPtr + Retire> From<&Snapshot<T, R>> for Ato
     fn from(value: &Snapshot<T, R>) -> Self {
         unsafe {
             let ptr = Snapshot::as_ptr(value);
-            Arc::<_, R>::increment_strong_count(ptr);
+            Arc::increment_strong_count(ptr);
             Self {
                 ptr: AtomicPtr::new(ptr.cast_mut()),
                 phantom: PhantomData,
@@ -354,7 +349,7 @@ impl<T: 'static, R: Protect + ProtectPtr + Retire> From<&Snapshot<T, R>> for Ato
     fn from(value: &Snapshot<T, R>) -> Self {
         unsafe {
             let ptr = Snapshot::as_ptr(value);
-            Weak::<_, R>::increment_weak_count(ptr);
+            _ = ManuallyDrop::new(Weak::from_raw(ptr)).clone();
             Self {
                 ptr: AtomicPtr::new(ptr.cast_mut()),
                 phantom_r: PhantomData,
@@ -363,11 +358,11 @@ impl<T: 'static, R: Protect + ProtectPtr + Retire> From<&Snapshot<T, R>> for Ato
     }
 }
 
-impl<T: 'static, R: Protect + ProtectPtr + Retire> From<&Arc<T, R>> for AtomicArc<T, R> {
-    fn from(value: &Arc<T, R>) -> Self {
+impl<T: 'static, R: Protect + Retire> From<&Arc<T>> for AtomicArc<T, R> {
+    fn from(value: &Arc<T>) -> Self {
         unsafe {
             let ptr = Arc::as_ptr(value);
-            Arc::<_, R>::increment_strong_count(ptr);
+            Arc::increment_strong_count(ptr);
             Self {
                 ptr: AtomicPtr::new(ptr.cast_mut()),
                 phantom: PhantomData,
@@ -377,11 +372,11 @@ impl<T: 'static, R: Protect + ProtectPtr + Retire> From<&Arc<T, R>> for AtomicAr
     }
 }
 
-impl<T: 'static, R: Protect + ProtectPtr + Retire> From<&Arc<T, R>> for AtomicWeak<T, R> {
-    fn from(value: &Arc<T, R>) -> Self {
+impl<T: 'static, R: Protect + Retire> From<&Arc<T>> for AtomicWeak<T, R> {
+    fn from(value: &Arc<T>) -> Self {
         unsafe {
             let ptr = Arc::as_ptr(value);
-            Weak::<_, R>::increment_weak_count(ptr);
+            _ = ManuallyDrop::new(Weak::from_raw(ptr)).clone();
             Self {
                 ptr: AtomicPtr::new(ptr.cast_mut()),
                 phantom_r: PhantomData,
@@ -400,3 +395,90 @@ fn with_critical_section<R: Protect, V, F: FnMut() -> V>(mut f: F) -> V {
     R::end_critical_section();
     result
 }
+
+type FnLookup = HashMap<(TypeId, bool), fn(*mut u8)>;
+
+// A thread will only lock the mutex once per key to populate the thread-local cache.
+static DROP_FN_LOOKUP: OnceLock<Mutex<FnLookup>> = OnceLock::new();
+
+thread_local! {
+    static LOCAL_DROP_FN_LOOKUP: RefCell<FnLookup> = RefCell::default();
+}
+
+fn get_drop_fn<T: 'static, const IS_ARC: bool>() -> fn(*mut u8) {
+    LOCAL_DROP_FN_LOOKUP.with_borrow_mut(|lookup| {
+        let key = (TypeId::of::<T>(), IS_ARC);
+        *lookup.entry(key).or_insert_with(|| {
+            let mut m = DROP_FN_LOOKUP.get_or_init(Mutex::default).lock().unwrap();
+            *m.entry(key).or_insert_with(|| {
+                if IS_ARC {
+                    |ptr: *mut u8| unsafe { drop(Arc::from_raw(ptr as *const T)) }
+                } else {
+                    |ptr: *mut u8| unsafe { drop(Weak::from_raw(ptr as *const T)) }
+                }
+            })
+        })
+    })
+}
+
+/// A trait to generalize the [`Arc::as_ptr`] method.
+pub trait AsPtr<T> {
+    fn as_ptr(this: &Self) -> *const T;
+}
+
+impl<T> AsPtr<T> for Arc<T> {
+    fn as_ptr(this: &Self) -> *const T {
+        Arc::as_ptr(this)
+    }
+}
+
+impl<T> AsPtr<T> for Weak<T> {
+    fn as_ptr(this: &Self) -> *const T {
+        this.as_ptr()
+    }
+}
+
+pub trait CloneFromRaw<T> {
+    #[allow(clippy::missing_safety_doc)]
+    unsafe fn clone_from_raw(ptr: *const T) -> Self;
+}
+
+impl<T> CloneFromRaw<T> for Arc<T> {
+    unsafe fn clone_from_raw(ptr: *const T) -> Self {
+        (*ManuallyDrop::new(Self::from_raw(ptr))).clone()
+    }
+}
+
+impl<T> CloneFromRaw<T> for Weak<T> {
+    unsafe fn clone_from_raw(ptr: *const T) -> Self {
+        (*ManuallyDrop::new(Self::from_raw(ptr))).clone()
+    }
+}
+
+pub trait TryCloneFromRaw<T>: Sized {
+    #[allow(clippy::missing_safety_doc)]
+    unsafe fn try_clone_from_raw(ptr: *const T) -> Option<Self>;
+}
+
+impl<T> TryCloneFromRaw<T> for Arc<T> {
+    unsafe fn try_clone_from_raw(ptr: *const T) -> Option<Self> {
+        (*ManuallyDrop::new(Weak::from_raw(ptr))).upgrade()
+    }
+}
+
+impl<T> TryCloneFromRaw<T> for Weak<T> {
+    unsafe fn try_clone_from_raw(ptr: *const T) -> Option<Self> {
+        Some(Self::clone_from_raw(ptr))
+    }
+}
+
+/// A marker trait for smart pointers that prevent deallocation of the object: [`Arc`] and
+/// [`Snapshot`], but not [`Weak`].
+pub trait StrongPtr<T>: Deref + SmartPtr<T> {}
+
+impl<T, X> StrongPtr<T> for X where X: Deref + SmartPtr<T> {}
+
+/// A marker trait for all smart pointers: [`Arc`], [`Weak`], and [`Snapshot`].
+pub trait SmartPtr<T>: AsPtr<T> + CloneFromRaw<T> + TryCloneFromRaw<T> {}
+
+impl<T, X> SmartPtr<T> for X where X: AsPtr<T> + CloneFromRaw<T> + TryCloneFromRaw<T> {}

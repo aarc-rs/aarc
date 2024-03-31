@@ -3,15 +3,16 @@
 ### Added
 
 - thread-local handles to vacate slots automatically on exit.
-- sticky_counter: for efficient weak pointer upgrades.
-- support for multiple critical sections per thread (e.g. signal handling).
+- support for multiple critical sections per thread (e.g. during signal handling).
 
 ### Changed
 
-- retire logic: use fn and cache instead of boxed Fns to eliminate unnecessary allocations.
-- retire logic: retire every decrement - allows for wait-free upgrades.
+- retire logic: use fn ptrs and cache instead of boxed Fns to eliminate unnecessary allocations.
 - marker traits: renamed to "SmartPtr" and "StrongPtr".
-- upgrade method on Weak: made generic, now can also upgrade to a Snapshot.
+
+### Removed
+
+- custom Arc and Weak implementations.
 
 ### Fixed
 

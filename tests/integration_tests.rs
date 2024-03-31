@@ -1,7 +1,8 @@
-use aarc::{Arc, AtomicArc, AtomicWeak, Snapshot};
+use aarc::{AtomicArc, AtomicWeak, Snapshot};
 use rand::random;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::SeqCst;
+use std::sync::Arc;
 use std::thread;
 
 fn test_stack(threads_count: usize, iters_per_thread: usize) {

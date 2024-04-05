@@ -1,4 +1,4 @@
-use crate::atomics::{AsPtr, CloneFromRaw, TryCloneFromRaw};
+use crate::atomics::{AsPtr, CloneFromRaw};
 use crate::smr::drc::ProtectPtr;
 use crate::smr::standard_reclaimer::StandardReclaimer;
 use std::marker::PhantomData;
@@ -8,7 +8,7 @@ use std::ptr::NonNull;
 use std::sync::{Arc, Weak};
 
 /// An [`Arc`]-like smart pointer that facilitates reads and writes to
-/// [`AtomicArc`][`crate::AtomicArc`] and [`AtomicWeak`][`crate::AtomicWeak`].
+/// [`AtomicArc`][`crate::AtomicArc`].
 ///
 /// Usage notes:
 /// * `Snapshot` implements [`Deref`] and prevents deallocation, but it does not contribute to the
@@ -23,8 +23,7 @@ use std::sync::{Arc, Weak};
 /// replacement for [`Arc`] in a data structure.
 /// * If a thread holds too many `Snapshot`s at a time, the performance of [`StandardReclaimer`]
 /// may gradually degrade.
-/// * A `Snapshot` can only be created by calling [`AtomicArc::load`][`crate::AtomicArc::load`] or
-/// [`AtomicWeak::upgrade`][`crate::AtomicWeak::upgrade`].
+/// * A `Snapshot` can only be created through methods on [`AtomicArc`][`crate::AtomicArc`].
 pub struct Snapshot<T, R: ProtectPtr = StandardReclaimer> {
     ptr: NonNull<T>,
     phantom: PhantomData<T>,
@@ -51,21 +50,6 @@ impl<T, R: ProtectPtr> CloneFromRaw<T> for Snapshot<T, R> {
             ptr: NonNull::new_unchecked(ptr.cast_mut()),
             phantom: PhantomData,
             _guard: R::protect_ptr(ptr as *mut u8),
-        }
-    }
-}
-
-impl<T, R: ProtectPtr> TryCloneFromRaw<T> for Snapshot<T, R> {
-    unsafe fn try_clone_from_raw(ptr: *const T) -> Option<Self> {
-        let guard = R::protect_ptr(ptr as *mut u8);
-        if ManuallyDrop::new(Weak::from_raw(ptr)).strong_count() == 0 {
-            None
-        } else {
-            Some(Self {
-                ptr: NonNull::new_unchecked(ptr.cast_mut()),
-                phantom: PhantomData,
-                _guard: guard,
-            })
         }
     }
 }

@@ -146,9 +146,9 @@ fn test_sorted_linked_list(threads_count: usize, iters_per_thread: usize) {
 
     // Verify that no nodes were lost and that the list is in sorted order.
     let mut i = 0;
-    let mut curr_node = list.head.load::<Snapshot<_>>().unwrap();
+    let mut curr_node = list.head.load::<Arc<_>>().unwrap();
     loop {
-        let next = curr_node.next.load::<Snapshot<_>>();
+        let next = curr_node.next.load::<Arc<_>>();
         if let Some(next_node) = next {
             assert!(curr_node.val <= next_node.val);
             curr_node = next_node;
@@ -159,7 +159,7 @@ fn test_sorted_linked_list(threads_count: usize, iters_per_thread: usize) {
     }
     assert_eq!(threads_count * iters_per_thread, i);
     // Iterate in reverse order using the weak ptrs.
-    while let Some(prev_node) = curr_node.prev.upgrade::<Snapshot<_>>() {
+    while let Some(prev_node) = curr_node.prev.upgrade() {
         assert!(curr_node.val >= prev_node.val);
         curr_node = prev_node;
     }

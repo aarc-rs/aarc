@@ -12,9 +12,8 @@
   [`AtomicWeak`](https://docs.rs/aarc/latest/aarc/struct.AtomicWeak.html): variants of `Arc` and
   `Weak` with atomically updatable pointers.
 - [`Snapshot`](https://docs.rs/aarc/latest/aarc/struct.Snapshot.html): A novel smart pointer
-  similar to a hazard pointer that, when used with `AtomicArc` / `AtomicWeak`, accelerates data
-  structure traversals by orders of magnitude. It prevents deallocation but does not contribute
-  to reference counts.
+  similar to a hazard pointer that significantly reduces contention when multiple threads load from
+  the same `AtomicArc`. It prevents deallocation but does not contribute to reference counts.
 
 ### Motivation
 

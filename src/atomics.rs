@@ -199,9 +199,6 @@ unsafe impl<T: 'static + Send + Sync, R: Protect + Retire> Sync for AtomicArc<T,
 ///
 /// let atomic = AtomicWeak::<_>::from(&arc1); // +1 weak count
 ///
-/// let snapshot = atomic.upgrade::<Snapshot<_>>().unwrap(); // snapshot doesn't affect counts
-/// assert_eq!(*snapshot, 53);
-///
 /// let weak = atomic.load().unwrap(); // +1 weak count
 /// assert_eq!(Arc::strong_count(&arc1), 1);
 /// assert_eq!(Arc::weak_count(&arc1), 2);
@@ -278,15 +275,16 @@ impl<T: 'static, R: Protect + Retire> AtomicWeak<T, R> {
         }
     }
 
-    /// Loads a [`StrongPtr`] (an [`Arc`] or a [`Snapshot`]) if the strong count is at least one.
-    /// Analogous to [`Weak::upgrade`].
-    pub fn upgrade<V: StrongPtr<T>>(&self) -> Option<V> {
+    /// Loads an [`Arc`] if the strong count is at least one. Analogous to [`Weak::upgrade`].
+    pub fn upgrade(&self) -> Option<Arc<T>> {
         let _guard = R::protect();
         let ptr = self.ptr.load(Acquire);
         if ptr.is_null() {
             None
         } else {
-            unsafe { V::try_clone_from_raw(ptr) }
+            unsafe {
+                ManuallyDrop::new(Weak::from_raw(ptr)).upgrade()
+            }
         }
     }
 }
@@ -442,23 +440,6 @@ impl<T> CloneFromRaw<T> for Weak<T> {
     }
 }
 
-pub trait TryCloneFromRaw<T>: Sized {
-    #[allow(clippy::missing_safety_doc)]
-    unsafe fn try_clone_from_raw(ptr: *const T) -> Option<Self>;
-}
-
-impl<T> TryCloneFromRaw<T> for Arc<T> {
-    unsafe fn try_clone_from_raw(ptr: *const T) -> Option<Self> {
-        (*ManuallyDrop::new(Weak::from_raw(ptr))).upgrade()
-    }
-}
-
-impl<T> TryCloneFromRaw<T> for Weak<T> {
-    unsafe fn try_clone_from_raw(ptr: *const T) -> Option<Self> {
-        Some(Self::clone_from_raw(ptr))
-    }
-}
-
 /// A marker trait for smart pointers that prevent deallocation of the object: [`Arc`] and
 /// [`Snapshot`], but not [`Weak`].
 pub trait StrongPtr<T>: Deref + SmartPtr<T> {}
@@ -466,6 +447,6 @@ pub trait StrongPtr<T>: Deref + SmartPtr<T> {}
 impl<T, X> StrongPtr<T> for X where X: Deref + SmartPtr<T> {}
 
 /// A marker trait for all smart pointers: [`Arc`], [`Weak`], and [`Snapshot`].
-pub trait SmartPtr<T>: AsPtr<T> + CloneFromRaw<T> + TryCloneFromRaw<T> {}
+pub trait SmartPtr<T>: AsPtr<T> + CloneFromRaw<T> {}
 
-impl<T, X> SmartPtr<T> for X where X: AsPtr<T> + CloneFromRaw<T> + TryCloneFromRaw<T> {}
+impl<T, X> SmartPtr<T> for X where X: AsPtr<T> + CloneFromRaw<T> {}

@@ -1,3 +1,7 @@
+## v0.2.1 - 2024-04-05
+
+* fixed `upgrade` method of `AtomicWeak`: disallow loading `Snapshot`.
+
 ## v0.2.0 - 2024-03-31
 
 * removed custom Arc and Weak implementations.

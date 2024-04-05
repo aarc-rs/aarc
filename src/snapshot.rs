@@ -1,11 +1,11 @@
-use crate::atomics::{AsPtr, CloneFromRaw};
-use crate::smr::drc::ProtectPtr;
-use crate::smr::standard_reclaimer::StandardReclaimer;
 use std::marker::PhantomData;
-use std::mem::ManuallyDrop;
 use std::ops::Deref;
 use std::ptr::NonNull;
 use std::sync::{Arc, Weak};
+
+use crate::atomics::{AsPtr, CloneFromRaw};
+use crate::smr::drc::ProtectPtr;
+use crate::smr::standard_reclaimer::StandardReclaimer;
 
 /// An [`Arc`]-like smart pointer that facilitates reads and writes to
 /// [`AtomicArc`][`crate::AtomicArc`].

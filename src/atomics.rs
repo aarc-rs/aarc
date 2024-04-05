@@ -282,9 +282,7 @@ impl<T: 'static, R: Protect + Retire> AtomicWeak<T, R> {
         if ptr.is_null() {
             None
         } else {
-            unsafe {
-                ManuallyDrop::new(Weak::from_raw(ptr)).upgrade()
-            }
+            unsafe { ManuallyDrop::new(Weak::from_raw(ptr)).upgrade() }
         }
     }
 }

@@ -78,6 +78,7 @@ impl<T: 'static, R: Protect + Retire> AtomicArc<T, R> {
     /// If `self` and `current` point to the same allocation, `new`'s pointer will be stored into
     /// `self` and the result will be an empty [`Ok`]. Otherwise, an [`Err`] containing the
     /// previous value will be returned.
+    #[allow(clippy::missing_errors_doc)]
     pub fn compare_exchange<C, N, V>(
         &self,
         current: Option<&C>,
@@ -113,6 +114,7 @@ impl<T: 'static, R: Protect + Retire> AtomicArc<T, R> {
         };
         drop(guard); // drop it early because retire could take a (relatively) long time.
         if !to_retire.is_null() {
+            #[allow(clippy::ptr_as_ptr)]
             R::retire(to_retire as *mut u8, get_drop_fn::<T, true>());
         }
         result
@@ -140,6 +142,7 @@ impl<T: 'static, R: Protect + Retire> AtomicArc<T, R> {
         }
         let before = self.ptr.swap(ptr.cast_mut(), AcqRel);
         if !before.is_null() {
+            #[allow(clippy::ptr_as_ptr)]
             R::retire(before as *mut u8, get_drop_fn::<T, true>());
         }
     }
@@ -176,6 +179,7 @@ impl<T: 'static, R: Protect + Retire> Drop for AtomicArc<T, R> {
     fn drop(&mut self) {
         let ptr = self.ptr.load(Relaxed);
         if !ptr.is_null() {
+            #[allow(clippy::ptr_as_ptr)]
             R::retire(ptr as *mut u8, get_drop_fn::<T, true>());
         }
     }
@@ -211,6 +215,7 @@ pub struct AtomicWeak<T: 'static, R: Protect + Retire = StandardReclaimer> {
 impl<T: 'static, R: Protect + Retire> AtomicWeak<T, R> {
     /// See [`AtomicArc::compare_exchange`]. This method behaves similarly, except that the return
     /// type for the failure case cannot be specified by the caller; it will be a [`Weak`].
+    #[allow(clippy::missing_errors_doc)]
     pub fn compare_exchange<C, N>(
         &self,
         current: Option<&C>,
@@ -245,6 +250,7 @@ impl<T: 'static, R: Protect + Retire> AtomicWeak<T, R> {
         };
         drop(guard); // drop it early because retire could take a (relatively) long time.
         if !to_retire.is_null() {
+            #[allow(clippy::ptr_as_ptr)]
             R::retire(to_retire as *mut u8, get_drop_fn::<T, false>());
         }
         result
@@ -271,6 +277,7 @@ impl<T: 'static, R: Protect + Retire> AtomicWeak<T, R> {
         }
         let before = self.ptr.swap(ptr.cast_mut(), AcqRel);
         if !before.is_null() {
+            #[allow(clippy::ptr_as_ptr)]
             R::retire(before as *mut u8, get_drop_fn::<T, false>());
         }
     }
@@ -316,6 +323,7 @@ impl<T: 'static, R: Protect + Retire> Drop for AtomicWeak<T, R> {
     fn drop(&mut self) {
         let ptr = self.ptr.load(Relaxed);
         if !ptr.is_null() {
+            #[allow(clippy::ptr_as_ptr)]
             R::retire(ptr as *mut u8, get_drop_fn::<T, false>());
         }
     }

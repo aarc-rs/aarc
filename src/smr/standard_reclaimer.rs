@@ -44,6 +44,7 @@ impl StandardReclaimer {
         SLOTS.get_or_init(UnrolledLinkedList::default)
     }
     thread_local! {
+        #[allow(clippy::default_trait_access)]
         static SLOT_HANDLE: RefCell<SlotHandle> = Default::default();
     }
     fn get_or_claim_slot() -> &'static Slot {
@@ -122,6 +123,7 @@ impl Retire for StandardReclaimer {
         }
         let all_slots = Self::get_all_slots();
         let next_batch_size = all_slots.get_nodes_count() * SLOTS_PER_NODE;
+        #[allow(clippy::explicit_deref_methods)]
         let batch = mem::replace(
             borrowed.deref_mut(),
             Batch {
@@ -233,6 +235,7 @@ struct Batch {
 
 impl Drop for Batch {
     fn drop(&mut self) {
+        #[allow(clippy::explicit_iter_loop)]
         for (ptr, f) in self.functions.iter() {
             (*f)(*ptr);
         }
@@ -264,6 +267,7 @@ mod tests {
     fn with_flag<F: Fn(*mut Cell<bool>, fn(*mut u8))>(f: F) {
         let flag_ptr = alloc_box_ptr(Cell::new(false));
         let flag_fn = Box::new(|ptr: *mut u8| unsafe {
+            #[allow(clippy::ptr_as_ptr)]
             (*(ptr as *mut Cell<bool>)).set(true);
         });
         f(flag_ptr, *flag_fn);
@@ -289,6 +293,7 @@ mod tests {
             let slot = StandardReclaimer::get_or_claim_slot();
             let guard = StandardReclaimer::protect();
 
+            #[allow(clippy::ptr_as_ptr)]
             StandardReclaimer::retire(flag_ptr as *mut u8, flag_fn);
             assert!(!(*flag_ptr).get());
 
@@ -317,8 +322,10 @@ mod tests {
                 ptrs: HashSet::with_capacity(1),
             });
 
+            #[allow(clippy::ptr_as_ptr)]
             let guard = StandardReclaimer::protect_ptr(flag_ptr as *mut u8);
 
+            #[allow(clippy::ptr_as_ptr)]
             StandardReclaimer::retire(flag_ptr as *mut u8, flag_fn);
             assert!(!(*flag_ptr).get());
 

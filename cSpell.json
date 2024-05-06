@@ -1,0 +1,30 @@
+{
+    "words": [
+        "aarc",
+        "clippy",
+        "curr",
+        "dealloc",
+        "deallocated",
+        "deallocations",
+        "dtolnay",
+        "impls",
+        "miri",
+        "nextest",
+        "ptrs",
+        "Quickstart",
+        "RAII",
+        "Ruslan",
+        "RUSTDOCFLAGS",
+        "rustflags",
+        "rustfmt",
+        "struct",
+        "Swatinem",
+        "taiki",
+        "Treiber",
+        "usize"
+    ],
+    "enableFiletypes": [
+        "shellscript",
+        "toml"
+    ]
+}

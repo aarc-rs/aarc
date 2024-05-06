@@ -1,10 +1,6 @@
 #![doc = include_str!("../README.md")]
 
-pub use atomics::AsPtr;
-pub use atomics::AtomicArc;
-pub use atomics::AtomicWeak;
-pub use atomics::SmartPtr;
-pub use atomics::StrongPtr;
+pub use atomics::{AsPtr, AtomicArc, AtomicWeak, SmartPtr, StrongPtr};
 pub use snapshot::Snapshot;
 
 pub(crate) mod atomics;

@@ -1,8 +1,9 @@
-use crate::utils::helpers::{alloc_box_ptr, dealloc_box_ptr};
 use std::array;
 use std::ptr::null_mut;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+
+use crate::utils::helpers::{alloc_box_ptr, dealloc_box_ptr};
 
 /// A specialized linked list; each node contains an array of N items.
 pub(crate) struct UnrolledLinkedList<T: Default, const N: usize> {
@@ -44,10 +45,7 @@ impl<T: Default, const N: usize> UnrolledLinkedList<T, N> {
             let mut next = curr.next.load(SeqCst);
             if next.is_null() {
                 let new_node = alloc_box_ptr(ULLNode::default());
-                match curr
-                    .next
-                    .compare_exchange(null_mut(), new_node, SeqCst, SeqCst)
-                {
+                match curr.next.compare_exchange(null_mut(), new_node, SeqCst, SeqCst) {
                     Ok(_) => {
                         next = new_node;
                         self.nodes_count.fetch_add(1, SeqCst);
@@ -118,10 +116,11 @@ impl<T, const N: usize> Drop for ULLNode<T, N> {
 
 #[cfg(test)]
 mod tests {
-    use crate::utils::unrolled_linked_list::UnrolledLinkedList;
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::Ordering::SeqCst;
     use std::thread;
+
+    use crate::utils::unrolled_linked_list::UnrolledLinkedList;
 
     #[test]
     fn test_concurrent_iter_and_append() {
@@ -132,9 +131,7 @@ mod tests {
         thread::scope(|s| {
             for _ in 0..THREADS_COUNT {
                 s.spawn(|| {
-                    let result = ull.try_for_each_with_append(|b| {
-                        b.compare_exchange(false, true, SeqCst, SeqCst).is_ok()
-                    });
+                    let result = ull.try_for_each_with_append(|b| b.compare_exchange(false, true, SeqCst, SeqCst).is_ok());
                     assert!(result.load(SeqCst));
                 });
             }

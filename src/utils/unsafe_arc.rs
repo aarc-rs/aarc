@@ -1,9 +1,10 @@
-use crate::utils::helpers::{alloc_box_ptr, dealloc_box_ptr};
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::sync::atomic::{fence, AtomicUsize};
+
+use crate::utils::helpers::{alloc_box_ptr, dealloc_box_ptr};
 
 /// A slightly more efficient and convenient Arc for internal use only.
 #[allow(clippy::doc_markdown)]
@@ -95,8 +96,9 @@ struct UnsafeArcInner<T> {
 
 #[cfg(test)]
 mod tests {
-    use crate::utils::unsafe_arc::UnsafeArc;
     use std::sync::atomic::Ordering::SeqCst;
+
+    use crate::utils::unsafe_arc::UnsafeArc;
 
     #[test]
     fn test_no_leak() {

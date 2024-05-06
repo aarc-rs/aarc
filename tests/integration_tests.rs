@@ -1,9 +1,10 @@
-use aarc::{AtomicArc, AtomicWeak, Snapshot};
-use rand::random;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::Arc;
 use std::thread;
+
+use aarc::{AtomicArc, AtomicWeak, Snapshot};
+use rand::random;
 
 fn test_stack(threads_count: usize, iters_per_thread: usize) {
     struct StackNode {
@@ -34,10 +35,7 @@ fn test_stack(threads_count: usize, iters_per_thread: usize) {
         fn pop(&self) -> Option<Snapshot<StackNode>> {
             let mut top = self.top.load::<Snapshot<_>>();
             while let Some(top_node) = top.as_ref() {
-                match self
-                    .top
-                    .compare_exchange(top.as_ref(), top_node.next.as_ref())
-                {
+                match self.top.compare_exchange(top.as_ref(), top_node.next.as_ref()) {
                     #[allow(clippy::ignored_unit_patterns)]
                     Ok(_) => return top,
                     Err(actual_top) => top = actual_top,
@@ -59,9 +57,7 @@ fn test_stack(threads_count: usize, iters_per_thread: usize) {
         }
     });
 
-    let val_counts: Vec<AtomicUsize> = (0..iters_per_thread)
-        .map(|_| AtomicUsize::default())
-        .collect();
+    let val_counts: Vec<AtomicUsize> = (0..iters_per_thread).map(|_| AtomicUsize::default()).collect();
     thread::scope(|s| {
         for _ in 0..threads_count {
             s.spawn(|| {

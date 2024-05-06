@@ -1,6 +1,3 @@
-use crate::smr::drc::{Protect, ProtectPtr, Retire};
-use crate::smr::standard_reclaimer::StandardReclaimer;
-use crate::Snapshot;
 use std::any::TypeId;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -12,6 +9,10 @@ use std::ptr::{null, null_mut};
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
+
+use crate::smr::drc::{Protect, ProtectPtr, Retire};
+use crate::smr::standard_reclaimer::StandardReclaimer;
+use crate::Snapshot;
 
 /// An [`Arc`] with an atomically updatable pointer.
 ///
@@ -79,11 +80,7 @@ impl<T: 'static, R: Protect + Retire> AtomicArc<T, R> {
     /// `self` and the result will be an empty [`Ok`]. Otherwise, an [`Err`] containing the
     /// previous value will be returned.
     #[allow(clippy::missing_errors_doc)]
-    pub fn compare_exchange<C, N, V>(
-        &self,
-        current: Option<&C>,
-        new: Option<&N>,
-    ) -> Result<(), Option<V>>
+    pub fn compare_exchange<C, N, V>(&self, current: Option<&C>, new: Option<&N>) -> Result<(), Option<V>>
     where
         C: SmartPtr<T>,
         N: StrongPtr<T>,
@@ -93,10 +90,7 @@ impl<T: 'static, R: Protect + Retire> AtomicArc<T, R> {
         let n: *const T = new.map_or(null(), N::as_ptr);
         let mut to_retire: *mut T = null_mut();
         let guard = R::protect();
-        let result = match self
-            .ptr
-            .compare_exchange(c.cast_mut(), n.cast_mut(), AcqRel, Acquire)
-        {
+        let result = match self.ptr.compare_exchange(c.cast_mut(), n.cast_mut(), AcqRel, Acquire) {
             Ok(before) => unsafe {
                 if !n.is_null() && !ptr::eq(n, before) {
                     Arc::increment_strong_count(n);
@@ -216,11 +210,7 @@ impl<T: 'static, R: Protect + Retire> AtomicWeak<T, R> {
     /// See [`AtomicArc::compare_exchange`]. This method behaves similarly, except that the return
     /// type for the failure case cannot be specified by the caller; it will be a [`Weak`].
     #[allow(clippy::missing_errors_doc)]
-    pub fn compare_exchange<C, N>(
-        &self,
-        current: Option<&C>,
-        new: Option<&N>,
-    ) -> Result<(), Option<Weak<T>>>
+    pub fn compare_exchange<C, N>(&self, current: Option<&C>, new: Option<&N>) -> Result<(), Option<Weak<T>>>
     where
         C: SmartPtr<T>,
         N: SmartPtr<T>,
@@ -229,10 +219,7 @@ impl<T: 'static, R: Protect + Retire> AtomicWeak<T, R> {
         let n: *const T = new.map_or(null(), N::as_ptr);
         let mut to_retire: *mut T = null_mut();
         let guard = R::protect();
-        let result = match self
-            .ptr
-            .compare_exchange(c.cast_mut(), n.cast_mut(), AcqRel, Acquire)
-        {
+        let result = match self.ptr.compare_exchange(c.cast_mut(), n.cast_mut(), AcqRel, Acquire) {
             Ok(before) => unsafe {
                 if !n.is_null() && !ptr::eq(n, before) {
                     _ = ManuallyDrop::new(Weak::from_raw(before)).clone();

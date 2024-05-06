@@ -1,6 +1,3 @@
-use crate::smr::drc::{Protect, ProtectPtr, Retire};
-use crate::utils::unrolled_linked_list::UnrolledLinkedList;
-use crate::utils::unsafe_arc::UnsafeArc;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::mem;
@@ -9,6 +6,10 @@ use std::ptr::null_mut;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize};
 use std::sync::OnceLock;
+
+use crate::smr::drc::{Protect, ProtectPtr, Retire};
+use crate::utils::unrolled_linked_list::UnrolledLinkedList;
+use crate::utils::unsafe_arc::UnsafeArc;
 
 const SLOTS_PER_NODE: usize = 32;
 
@@ -52,11 +53,8 @@ impl StandardReclaimer {
             if let Some(slot) = handle.0 {
                 slot
             } else {
-                let claimed = Self::get_all_slots().try_for_each_with_append(|slot| {
-                    slot.is_claimed
-                        .compare_exchange(false, true, SeqCst, SeqCst)
-                        .is_ok()
-                });
+                let claimed = Self::get_all_slots()
+                    .try_for_each_with_append(|slot| slot.is_claimed.compare_exchange(false, true, SeqCst, SeqCst).is_ok());
                 handle.0 = Some(claimed);
                 claimed
             }
@@ -104,11 +102,7 @@ impl ProtectPtr for StandardReclaimer {
         // TODO: don't search from the beginning every time
         let snapshot_ptr = Self::get_or_claim_slot()
             .snapshots
-            .try_for_each_with_append(|s| {
-                s.ptr
-                    .compare_exchange(null_mut(), ptr, SeqCst, SeqCst)
-                    .is_ok()
-            });
+            .try_for_each_with_append(|s| s.ptr.compare_exchange(null_mut(), ptr, SeqCst, SeqCst).is_ok());
         PtrGuard { snapshot_ptr }
     }
 }
@@ -255,12 +249,13 @@ impl Drop for SlotHandle {
 
 #[cfg(test)]
 mod tests {
-    use crate::smr::drc::{Protect, ProtectPtr, Retire};
-    use crate::smr::standard_reclaimer::{Batch, StandardReclaimer};
-    use crate::utils::helpers::{alloc_box_ptr, dealloc_box_ptr};
     use std::cell::Cell;
     use std::collections::HashSet;
     use std::sync::atomic::Ordering::SeqCst;
+
+    use crate::smr::drc::{Protect, ProtectPtr, Retire};
+    use crate::smr::standard_reclaimer::{Batch, StandardReclaimer};
+    use crate::utils::helpers::{alloc_box_ptr, dealloc_box_ptr};
 
     const TEST_PTR: *mut u8 = usize::MAX as *mut u8;
 

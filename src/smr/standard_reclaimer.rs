@@ -267,8 +267,7 @@ mod tests {
     fn with_flag<F: Fn(*mut Cell<bool>, fn(*mut u8))>(f: F) {
         let flag_ptr = alloc_box_ptr(Cell::new(false));
         let flag_fn = Box::new(|ptr: *mut u8| unsafe {
-            #[allow(clippy::ptr_as_ptr)]
-            (*(ptr as *mut Cell<bool>)).set(true);
+            (*ptr.cast::<Cell<bool>>()).set(true);
         });
         f(flag_ptr, *flag_fn);
         unsafe {
@@ -293,8 +292,7 @@ mod tests {
             let slot = StandardReclaimer::get_or_claim_slot();
             let guard = StandardReclaimer::protect();
 
-            #[allow(clippy::ptr_as_ptr)]
-            StandardReclaimer::retire(flag_ptr as *mut u8, flag_fn);
+            StandardReclaimer::retire(flag_ptr.cast::<u8>(), flag_fn);
             assert!(!(*flag_ptr).get());
 
             drop(guard);
@@ -322,11 +320,9 @@ mod tests {
                 ptrs: HashSet::with_capacity(1),
             });
 
-            #[allow(clippy::ptr_as_ptr)]
-            let guard = StandardReclaimer::protect_ptr(flag_ptr as *mut u8);
+            let guard = StandardReclaimer::protect_ptr(flag_ptr.cast::<u8>());
 
-            #[allow(clippy::ptr_as_ptr)]
-            StandardReclaimer::retire(flag_ptr as *mut u8, flag_fn);
+            StandardReclaimer::retire(flag_ptr.cast::<u8>(), flag_fn);
             assert!(!(*flag_ptr).get());
 
             drop(guard);

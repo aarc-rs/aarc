@@ -114,8 +114,7 @@ impl<T: 'static, R: Protect + Retire> AtomicArc<T, R> {
         };
         drop(guard); // drop it early because retire could take a (relatively) long time.
         if !to_retire.is_null() {
-            #[allow(clippy::ptr_as_ptr)]
-            R::retire(to_retire as *mut u8, get_drop_fn::<T, true>());
+            R::retire(to_retire.cast::<u8>(), get_drop_fn::<T, true>());
         }
         result
     }
@@ -142,8 +141,7 @@ impl<T: 'static, R: Protect + Retire> AtomicArc<T, R> {
         }
         let before = self.ptr.swap(ptr.cast_mut(), AcqRel);
         if !before.is_null() {
-            #[allow(clippy::ptr_as_ptr)]
-            R::retire(before as *mut u8, get_drop_fn::<T, true>());
+            R::retire(before.cast::<u8>(), get_drop_fn::<T, true>());
         }
     }
 }
@@ -179,8 +177,7 @@ impl<T: 'static, R: Protect + Retire> Drop for AtomicArc<T, R> {
     fn drop(&mut self) {
         let ptr = self.ptr.load(Relaxed);
         if !ptr.is_null() {
-            #[allow(clippy::ptr_as_ptr)]
-            R::retire(ptr as *mut u8, get_drop_fn::<T, true>());
+            R::retire(ptr.cast::<u8>(), get_drop_fn::<T, true>());
         }
     }
 }
@@ -250,8 +247,7 @@ impl<T: 'static, R: Protect + Retire> AtomicWeak<T, R> {
         };
         drop(guard); // drop it early because retire could take a (relatively) long time.
         if !to_retire.is_null() {
-            #[allow(clippy::ptr_as_ptr)]
-            R::retire(to_retire as *mut u8, get_drop_fn::<T, false>());
+            R::retire(to_retire.cast::<u8>(), get_drop_fn::<T, false>());
         }
         result
     }
@@ -277,8 +273,7 @@ impl<T: 'static, R: Protect + Retire> AtomicWeak<T, R> {
         }
         let before = self.ptr.swap(ptr.cast_mut(), AcqRel);
         if !before.is_null() {
-            #[allow(clippy::ptr_as_ptr)]
-            R::retire(before as *mut u8, get_drop_fn::<T, false>());
+            R::retire(before.cast::<u8>(), get_drop_fn::<T, false>());
         }
     }
 
@@ -323,8 +318,7 @@ impl<T: 'static, R: Protect + Retire> Drop for AtomicWeak<T, R> {
     fn drop(&mut self) {
         let ptr = self.ptr.load(Relaxed);
         if !ptr.is_null() {
-            #[allow(clippy::ptr_as_ptr)]
-            R::retire(ptr as *mut u8, get_drop_fn::<T, false>());
+            R::retire(ptr.cast::<u8>(), get_drop_fn::<T, false>());
         }
     }
 }

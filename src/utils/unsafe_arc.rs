@@ -14,14 +14,12 @@ pub(crate) struct UnsafeArc<T> {
 }
 
 impl<T> UnsafeArc<T> {
-    #[allow(clippy::ptr_as_ptr)]
     pub(crate) fn as_ptr(this: &Self) -> *mut T {
-        this.ptr.as_ptr() as *mut T
+        this.ptr.as_ptr().cast::<T>()
     }
     pub(crate) unsafe fn decrement_ref_count(ptr: *mut T) {
         unsafe {
-            #[allow(clippy::ptr_as_ptr)]
-            let inner = ptr as *mut UnsafeArcInner<T>;
+            let inner = ptr.cast::<UnsafeArcInner<T>>();
             if (*inner).ref_count.fetch_sub(1, Release) == 1 {
                 fence(Acquire);
                 dealloc_box_ptr(inner);
@@ -30,8 +28,7 @@ impl<T> UnsafeArc<T> {
     }
     pub(crate) unsafe fn from_raw(ptr: *mut T) -> Self {
         Self {
-            #[allow(clippy::ptr_as_ptr)]
-            ptr: NonNull::new_unchecked(ptr as *mut UnsafeArcInner<T>),
+            ptr: NonNull::new_unchecked(ptr.cast::<UnsafeArcInner<T>>()),
             phantom: PhantomData,
         }
     }

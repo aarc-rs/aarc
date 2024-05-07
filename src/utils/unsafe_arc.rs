@@ -6,8 +6,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::sync::atomic::{fence, AtomicUsize};
 
 /// A slightly more efficient and convenient Arc for internal use only.
-#[allow(clippy::doc_markdown)]
-/// It has no weak count, implements DerefMut, and can be initialized with an arbitrary ref count.
+/// It has no weak count, implements `DerefMut`, and can be initialized with an arbitrary ref count.
 pub(crate) struct UnsafeArc<T> {
     ptr: NonNull<UnsafeArcInner<T>>,
     phantom: PhantomData<UnsafeArcInner<T>>,

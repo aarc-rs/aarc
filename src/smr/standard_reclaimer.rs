@@ -4,7 +4,6 @@ use crate::utils::unsafe_arc::UnsafeArc;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::mem;
-use std::ops::DerefMut;
 use std::ptr::null_mut;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize};
@@ -44,8 +43,7 @@ impl StandardReclaimer {
         SLOTS.get_or_init(UnrolledLinkedList::default)
     }
     thread_local! {
-        #[allow(clippy::default_trait_access)]
-        static SLOT_HANDLE: RefCell<SlotHandle> = Default::default();
+        static SLOT_HANDLE: RefCell<SlotHandle> = RefCell::default();
     }
     fn get_or_claim_slot() -> &'static Slot {
         Self::SLOT_HANDLE.with_borrow_mut(|handle| {
@@ -123,9 +121,8 @@ impl Retire for StandardReclaimer {
         }
         let all_slots = Self::get_all_slots();
         let next_batch_size = all_slots.get_nodes_count() * SLOTS_PER_NODE;
-        #[allow(clippy::explicit_deref_methods)]
         let batch = mem::replace(
-            borrowed.deref_mut(),
+            &mut *borrowed,
             Batch {
                 functions: Vec::with_capacity(next_batch_size),
                 ptrs: HashSet::with_capacity(next_batch_size),
@@ -228,6 +225,7 @@ impl Drop for CollectionNode {
 
 #[derive(Default)]
 struct Batch {
+    // (type is not over-complex)
     #[allow(clippy::type_complexity)]
     functions: Vec<(*mut u8, fn(*mut u8))>,
     ptrs: HashSet<*mut u8>,

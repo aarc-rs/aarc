@@ -25,8 +25,7 @@ fn test_stack(threads_count: usize, iters_per_thread: usize) {
                     next: top.as_ref().map(Arc::from),
                 });
                 match self.top.compare_exchange(top.as_ref(), Some(&new_node)) {
-                    #[allow(clippy::ignored_unit_patterns)]
-                    Ok(_) => break,
+                    Ok(()) => break,
                     Err(before) => top = before,
                 }
             }
@@ -38,8 +37,7 @@ fn test_stack(threads_count: usize, iters_per_thread: usize) {
                     .top
                     .compare_exchange(top.as_ref(), top_node.next.as_ref())
                 {
-                    #[allow(clippy::ignored_unit_patterns)]
-                    Ok(_) => return top,
+                    Ok(()) => return top,
                     Err(actual_top) => top = actual_top,
                 }
             }
@@ -115,8 +113,7 @@ fn test_sorted_linked_list(threads_count: usize, iters_per_thread: usize) {
                         next: next.as_ref().map_or(AtomicArc::default(), AtomicArc::from),
                     });
                     match curr_node.next.compare_exchange(next.as_ref(), Some(&new)) {
-                        #[allow(clippy::ignored_unit_patterns)]
-                        Ok(_) => {
+                        Ok(()) => {
                             if let Some(next_node) = next {
                                 // This is technically incorrect; another node could've been
                                 // inserted, but it's not crucial for this test.

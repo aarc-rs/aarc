@@ -75,10 +75,28 @@ impl<T: 'static> AtomicArc<T, StandardReclaimer> {
 }
 
 impl<T: 'static, R: Protect + Retire> AtomicArc<T, R> {
-    /// If `self` and `current` point to the same allocation, `new`'s pointer will be stored into
-    /// `self` and the result will be an empty [`Ok`]. Otherwise, an [`Err`] containing the
-    /// previous value will be returned.
-    #[allow(clippy::missing_errors_doc)]
+    /// Stores a value into the pointer if the current value is the same as the `current` value.
+    ///
+    /// This method provides guarded access to the `compare_exchange` method from the [`AtomicPtr<T>`]
+    /// held internally by [`AtomicArc<T>`].
+    ///
+    /// ### Arguments
+    /// `compare_exchange` takes in two [`SmartPtr<T>`] references as arguments:
+    /// - `current`: This reference should match the actual value inside [`AtomicArc<T>`] for success.
+    /// - `new`: A reference to the new value for [`AtomicArc<T>`].
+    ///
+    /// ### Results
+    /// The internal pointer of [`AtomicArc<T>`] is updated to the same location as the
+    /// supplied by the `new` [`SmartPtr<T>`]. On success the [`Ok`] unit value is returned.
+    ///
+    /// ### Notes
+    /// - see the [`compare_exchange`] method of [`std::sync::atomic::AtomicPtr`] for more info.
+    ///
+    /// # Errors
+    /// If the `current` and the actual allocations do not match, an [`Err`] containing the
+    /// 'new' [`SmartPtr<T>`] in the same form as supplied.
+    ///
+    /// [`compare_exchange`]: std::sync::atomic::AtomicPtr::compare_exchange
     pub fn compare_exchange<C, N, V>(
         &self,
         current: Option<&C>,
@@ -210,9 +228,30 @@ pub struct AtomicWeak<T: 'static, R: Protect + Retire = StandardReclaimer> {
 }
 
 impl<T: 'static, R: Protect + Retire> AtomicWeak<T, R> {
-    /// See [`AtomicArc::compare_exchange`]. This method behaves similarly, except that the return
-    /// type for the failure case cannot be specified by the caller; it will be a [`Weak`].
-    #[allow(clippy::missing_errors_doc)]
+    /// Stores a value into the pointer if the current value is the same as the `current` value.
+    ///
+    /// This method provides guarded access to the `compare_exchange` method from the [`AtomicPtr<T>`]
+    /// held internally by [`AtomicWeak<T>`].
+    ///
+    /// ### Arguments
+    /// `compare_exchange` takes in two [`SmartPtr<T>`] references as arguments:
+    /// - `current`: This reference should match the actual value inside [`AtomicWeak<T>`] for success.
+    /// - `new`: A reference to the new value for [`AtomicWeak<T>`].
+    ///
+    /// ### Results
+    /// The internal pointer of [`AtomicWeak<T>`] is updated to the same location as the
+    /// supplied by the `new` [`SmartPtr<T>`]. On success the [`Ok`] unit value is returned.
+    ///
+    /// ### Notes
+    /// - see the [`compare_exchange`] method of [`std::sync::atomic::AtomicPtr`] for more info.
+    /// - this method is _not_ analogous to the [`compare_exchange_weak`] method of [`AtomicPtr`].
+    ///
+    /// # Errors
+    /// If the `current` and the actual allocations do not match, an [`Err`] containing the
+    /// 'new' [`SmartPtr<T>`] downgraded into a [`std::sync::Weak<T>`].
+    ///
+    /// [`compare_exchange`]: std::sync::atomic::AtomicPtr::compare_exchange
+    /// [`compare_exchange_weak`]: std::sync::atomic::AtomicPtr::compare_exchange_weak
     pub fn compare_exchange<C, N>(
         &self,
         current: Option<&C>,

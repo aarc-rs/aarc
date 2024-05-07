@@ -74,8 +74,8 @@ fn test_stack(threads_count: usize, iters_per_thread: usize) {
     });
 
     // Verify that no nodes were lost.
-    #[allow(clippy::explicit_iter_loop)]
-    for count in val_counts.iter() {
+
+    for count in &val_counts {
         assert_eq!(count.load(SeqCst), threads_count);
     }
 }

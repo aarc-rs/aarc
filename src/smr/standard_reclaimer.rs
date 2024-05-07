@@ -235,8 +235,7 @@ struct Batch {
 
 impl Drop for Batch {
     fn drop(&mut self) {
-        #[allow(clippy::explicit_iter_loop)]
-        for (ptr, f) in self.functions.iter() {
+        for (ptr, f) in &self.functions {
             (*f)(*ptr);
         }
     }

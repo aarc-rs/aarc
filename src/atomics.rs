@@ -463,6 +463,7 @@ impl<T> AsPtr<T> for Weak<T> {
 }
 
 pub trait CloneFromRaw<T> {
+    // Todo: add safety documentation for this trait-function.
     #[allow(clippy::missing_safety_doc)]
     unsafe fn clone_from_raw(ptr: *const T) -> Self;
 }

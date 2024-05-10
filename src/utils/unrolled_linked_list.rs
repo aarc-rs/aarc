@@ -35,7 +35,7 @@ impl<T: Default, const N: usize> UnrolledLinkedList<T, N> {
     pub(crate) fn try_for_each_with_append<F: Fn(&T) -> bool>(&self, f: F) -> &T {
         let mut curr = &self.head;
         loop {
-            for item in curr.items.iter() {
+            for item in &curr.items {
                 if f(item) {
                     return item;
                 }

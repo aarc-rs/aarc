@@ -6,7 +6,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::sync::atomic::{fence, AtomicUsize};
 
 /// A slightly more efficient and convenient Arc for internal use only.
-/// It has no weak count, implements DerefMut, and can be initialized with an arbitrary ref count.
+/// It has no weak count, implements `DerefMut`, and can be initialized with an arbitrary ref count.
 pub(crate) struct UnsafeArc<T> {
     ptr: NonNull<UnsafeArcInner<T>>,
     phantom: PhantomData<UnsafeArcInner<T>>,
@@ -14,11 +14,11 @@ pub(crate) struct UnsafeArc<T> {
 
 impl<T> UnsafeArc<T> {
     pub(crate) fn as_ptr(this: &Self) -> *mut T {
-        this.ptr.as_ptr() as *mut T
+        this.ptr.as_ptr().cast::<T>()
     }
     pub(crate) unsafe fn decrement_ref_count(ptr: *mut T) {
         unsafe {
-            let inner = ptr as *mut UnsafeArcInner<T>;
+            let inner = ptr.cast::<UnsafeArcInner<T>>();
             if (*inner).ref_count.fetch_sub(1, Release) == 1 {
                 fence(Acquire);
                 dealloc_box_ptr(inner);
@@ -27,7 +27,7 @@ impl<T> UnsafeArc<T> {
     }
     pub(crate) unsafe fn from_raw(ptr: *mut T) -> Self {
         Self {
-            ptr: NonNull::new_unchecked(ptr as *mut UnsafeArcInner<T>),
+            ptr: NonNull::new_unchecked(ptr.cast::<UnsafeArcInner<T>>()),
             phantom: PhantomData,
         }
     }

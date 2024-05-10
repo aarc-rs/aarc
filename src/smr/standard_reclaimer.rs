@@ -4,7 +4,6 @@ use crate::utils::unsafe_arc::UnsafeArc;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::mem;
-use std::ops::DerefMut;
 use std::ptr::null_mut;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize};
@@ -44,7 +43,7 @@ impl StandardReclaimer {
         SLOTS.get_or_init(UnrolledLinkedList::default)
     }
     thread_local! {
-        static SLOT_HANDLE: RefCell<SlotHandle> = Default::default();
+        static SLOT_HANDLE: RefCell<SlotHandle> = RefCell::default();
     }
     fn get_or_claim_slot() -> &'static Slot {
         Self::SLOT_HANDLE.with_borrow_mut(|handle| {
@@ -123,7 +122,7 @@ impl Retire for StandardReclaimer {
         let all_slots = Self::get_all_slots();
         let next_batch_size = all_slots.get_nodes_count() * SLOTS_PER_NODE;
         let batch = mem::replace(
-            borrowed.deref_mut(),
+            &mut *borrowed,
             Batch {
                 functions: Vec::with_capacity(next_batch_size),
                 ptrs: HashSet::with_capacity(next_batch_size),
@@ -224,16 +223,17 @@ impl Drop for CollectionNode {
     }
 }
 
-#[allow(clippy::type_complexity)]
 #[derive(Default)]
 struct Batch {
+    // (type is not over-complex)
+    #[allow(clippy::type_complexity)]
     functions: Vec<(*mut u8, fn(*mut u8))>,
     ptrs: HashSet<*mut u8>,
 }
 
 impl Drop for Batch {
     fn drop(&mut self) {
-        for (ptr, f) in self.functions.iter() {
+        for (ptr, f) in &self.functions {
             (*f)(*ptr);
         }
     }
@@ -264,7 +264,7 @@ mod tests {
     fn with_flag<F: Fn(*mut Cell<bool>, fn(*mut u8))>(f: F) {
         let flag_ptr = alloc_box_ptr(Cell::new(false));
         let flag_fn = Box::new(|ptr: *mut u8| unsafe {
-            (*(ptr as *mut Cell<bool>)).set(true);
+            (*ptr.cast::<Cell<bool>>()).set(true);
         });
         f(flag_ptr, *flag_fn);
         unsafe {
@@ -289,7 +289,7 @@ mod tests {
             let slot = StandardReclaimer::get_or_claim_slot();
             let guard = StandardReclaimer::protect();
 
-            StandardReclaimer::retire(flag_ptr as *mut u8, flag_fn);
+            StandardReclaimer::retire(flag_ptr.cast::<u8>(), flag_fn);
             assert!(!(*flag_ptr).get());
 
             drop(guard);
@@ -317,9 +317,9 @@ mod tests {
                 ptrs: HashSet::with_capacity(1),
             });
 
-            let guard = StandardReclaimer::protect_ptr(flag_ptr as *mut u8);
+            let guard = StandardReclaimer::protect_ptr(flag_ptr.cast::<u8>());
 
-            StandardReclaimer::retire(flag_ptr as *mut u8, flag_fn);
+            StandardReclaimer::retire(flag_ptr.cast::<u8>(), flag_fn);
             assert!(!(*flag_ptr).get());
 
             drop(guard);

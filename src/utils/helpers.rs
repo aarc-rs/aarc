@@ -3,5 +3,5 @@ pub(crate) fn alloc_box_ptr<T>(item: T) -> *mut T {
 }
 
 pub(crate) unsafe fn dealloc_box_ptr<T>(ptr: *mut T) {
-    drop(Box::from_raw(ptr))
+    drop(Box::from_raw(ptr));
 }

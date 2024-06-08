@@ -1,17 +1,15 @@
-use crate::smr::drc::{Protect, ProtectPtr, Retire};
-use crate::smr::standard_reclaimer::StandardReclaimer;
-use crate::Snapshot;
-use std::any::TypeId;
-use std::cell::RefCell;
-use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
 use std::ops::Deref;
 use std::ptr;
 use std::ptr::{null, null_mut};
+use std::sync::{Arc, Weak};
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+
+use crate::smr::drc::{Protect, ProtectPtr, Retire};
+use crate::smr::standard_reclaimer::StandardReclaimer;
+use crate::Snapshot;
 
 /// An [`Arc`] with an atomically updatable pointer.
 ///
@@ -102,10 +100,10 @@ impl<T: 'static, R: Protect + Retire> AtomicArc<T, R> {
         current: Option<&C>,
         new: Option<&N>,
     ) -> Result<(), Option<V>>
-    where
-        C: SmartPtr<T>,
-        N: StrongPtr<T>,
-        V: SmartPtr<T>,
+        where
+            C: SmartPtr<T>,
+            N: StrongPtr<T>,
+            V: SmartPtr<T>,
     {
         let c: *const T = current.map_or(null(), C::as_ptr);
         let n: *const T = new.map_or(null(), N::as_ptr);
@@ -132,7 +130,7 @@ impl<T: 'static, R: Protect + Retire> AtomicArc<T, R> {
         };
         drop(guard); // drop it early because retire could take a (relatively) long time.
         if !to_retire.is_null() {
-            R::retire(to_retire.cast::<u8>(), get_drop_fn::<T, true>());
+            R::retire(to_retire.cast::<u8>(), decrement_strong_count::<T>);
         }
         result
     }
@@ -159,7 +157,7 @@ impl<T: 'static, R: Protect + Retire> AtomicArc<T, R> {
         }
         let before = self.ptr.swap(ptr.cast_mut(), AcqRel);
         if !before.is_null() {
-            R::retire(before.cast::<u8>(), get_drop_fn::<T, true>());
+            R::retire(before.cast::<u8>(), decrement_strong_count::<T>);
         }
     }
 }
@@ -195,7 +193,7 @@ impl<T: 'static, R: Protect + Retire> Drop for AtomicArc<T, R> {
     fn drop(&mut self) {
         let ptr = self.ptr.load(Relaxed);
         if !ptr.is_null() {
-            R::retire(ptr.cast::<u8>(), get_drop_fn::<T, true>());
+            R::retire(ptr.cast::<u8>(), decrement_strong_count::<T>);
         }
     }
 }
@@ -257,9 +255,9 @@ impl<T: 'static, R: Protect + Retire> AtomicWeak<T, R> {
         current: Option<&C>,
         new: Option<&N>,
     ) -> Result<(), Option<Weak<T>>>
-    where
-        C: SmartPtr<T>,
-        N: SmartPtr<T>,
+        where
+            C: SmartPtr<T>,
+            N: SmartPtr<T>,
     {
         let c: *const T = current.map_or(null(), C::as_ptr);
         let n: *const T = new.map_or(null(), N::as_ptr);
@@ -286,7 +284,7 @@ impl<T: 'static, R: Protect + Retire> AtomicWeak<T, R> {
         };
         drop(guard); // drop it early because retire could take a (relatively) long time.
         if !to_retire.is_null() {
-            R::retire(to_retire.cast::<u8>(), get_drop_fn::<T, false>());
+            R::retire(to_retire.cast::<u8>(), decrement_weak_count::<T>);
         }
         result
     }
@@ -312,7 +310,7 @@ impl<T: 'static, R: Protect + Retire> AtomicWeak<T, R> {
         }
         let before = self.ptr.swap(ptr.cast_mut(), AcqRel);
         if !before.is_null() {
-            R::retire(before.cast::<u8>(), get_drop_fn::<T, false>());
+            R::retire(before.cast::<u8>(), decrement_weak_count::<T>);
         }
     }
 
@@ -357,7 +355,7 @@ impl<T: 'static, R: Protect + Retire> Drop for AtomicWeak<T, R> {
     fn drop(&mut self) {
         let ptr = self.ptr.load(Relaxed);
         if !ptr.is_null() {
-            R::retire(ptr.cast::<u8>(), get_drop_fn::<T, false>());
+            R::retire(ptr.cast::<u8>(), decrement_weak_count::<T>);
         }
     }
 }
@@ -420,31 +418,6 @@ unsafe impl<T: 'static + Send + Sync, R: Protect + Retire> Send for AtomicWeak<T
 
 unsafe impl<T: 'static + Send + Sync, R: Protect + Retire> Sync for AtomicWeak<T, R> {}
 
-type FnLookup = HashMap<(TypeId, bool), fn(*mut u8)>;
-
-// A thread will only lock the mutex once per key to populate the thread-local cache.
-static DROP_FN_LOOKUP: OnceLock<Mutex<FnLookup>> = OnceLock::new();
-
-thread_local! {
-    static LOCAL_DROP_FN_LOOKUP: RefCell<FnLookup> = RefCell::default();
-}
-
-fn get_drop_fn<T: 'static, const IS_ARC: bool>() -> fn(*mut u8) {
-    LOCAL_DROP_FN_LOOKUP.with_borrow_mut(|lookup| {
-        let key = (TypeId::of::<T>(), IS_ARC);
-        *lookup.entry(key).or_insert_with(|| {
-            let mut m = DROP_FN_LOOKUP.get_or_init(Mutex::default).lock().unwrap();
-            *m.entry(key).or_insert_with(|| {
-                if IS_ARC {
-                    |ptr: *mut u8| unsafe { drop(Arc::from_raw(ptr as *const T)) }
-                } else {
-                    |ptr: *mut u8| unsafe { drop(Weak::from_raw(ptr as *const T)) }
-                }
-            })
-        })
-    })
-}
-
 /// A trait to generalize the [`Arc::as_ptr`] method.
 pub trait AsPtr<T> {
     fn as_ptr(this: &Self) -> *const T;
@@ -490,3 +463,11 @@ impl<T, X> StrongPtr<T> for X where X: Deref + SmartPtr<T> {}
 pub trait SmartPtr<T>: AsPtr<T> + CloneFromRaw<T> {}
 
 impl<T, X> SmartPtr<T> for X where X: AsPtr<T> + CloneFromRaw<T> {}
+
+pub(crate) fn decrement_strong_count<T>(ptr: *mut u8) {
+    unsafe { drop(Arc::from_raw(ptr as *const T)); }
+}
+
+pub(crate) fn decrement_weak_count<T>(ptr: *mut u8) {
+    unsafe { drop(Weak::from_raw(ptr as *const T)); }
+}

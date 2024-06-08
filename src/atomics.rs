@@ -3,9 +3,9 @@ use std::mem::ManuallyDrop;
 use std::ops::Deref;
 use std::ptr;
 use std::ptr::{null, null_mut};
-use std::sync::{Arc, Weak};
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
+use std::sync::{Arc, Weak};
 
 use crate::smr::drc::{Protect, ProtectPtr, Retire};
 use crate::smr::standard_reclaimer::StandardReclaimer;
@@ -100,10 +100,10 @@ impl<T: 'static, R: Protect + Retire> AtomicArc<T, R> {
         current: Option<&C>,
         new: Option<&N>,
     ) -> Result<(), Option<V>>
-        where
-            C: SmartPtr<T>,
-            N: StrongPtr<T>,
-            V: SmartPtr<T>,
+    where
+        C: SmartPtr<T>,
+        N: StrongPtr<T>,
+        V: SmartPtr<T>,
     {
         let c: *const T = current.map_or(null(), C::as_ptr);
         let n: *const T = new.map_or(null(), N::as_ptr);
@@ -255,9 +255,9 @@ impl<T: 'static, R: Protect + Retire> AtomicWeak<T, R> {
         current: Option<&C>,
         new: Option<&N>,
     ) -> Result<(), Option<Weak<T>>>
-        where
-            C: SmartPtr<T>,
-            N: SmartPtr<T>,
+    where
+        C: SmartPtr<T>,
+        N: SmartPtr<T>,
     {
         let c: *const T = current.map_or(null(), C::as_ptr);
         let n: *const T = new.map_or(null(), N::as_ptr);
@@ -465,9 +465,13 @@ pub trait SmartPtr<T>: AsPtr<T> + CloneFromRaw<T> {}
 impl<T, X> SmartPtr<T> for X where X: AsPtr<T> + CloneFromRaw<T> {}
 
 pub(crate) fn decrement_strong_count<T>(ptr: *mut u8) {
-    unsafe { drop(Arc::from_raw(ptr as *const T)); }
+    unsafe {
+        drop(Arc::from_raw(ptr as *const T));
+    }
 }
 
 pub(crate) fn decrement_weak_count<T>(ptr: *mut u8) {
-    unsafe { drop(Weak::from_raw(ptr as *const T)); }
+    unsafe {
+        drop(Weak::from_raw(ptr as *const T));
+    }
 }

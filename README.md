@@ -37,6 +37,9 @@ convenient RAII semantics through reference-counted pointers.
 Example 1: [Treiber Stack](https://en.wikipedia.org/wiki/Treiber_stack)
 
 ```rust no_run
+use std::ptr::null;
+use aarc::{Arc, AsPtr, AtomicArc, Guard};
+
 struct StackNode {
     val: usize,
     next: Option<Arc<Self>>,

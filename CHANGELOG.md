@@ -2,6 +2,7 @@
 
 * moved all SMR-related functionality to a separate crate - `fast-smr`.
 * brought back custom Arc and Weak implementations.
+* renamed `Snapshot` to `Guard`.
 
 ## v0.2.1 - 2024-04-05
 

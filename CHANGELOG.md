@@ -1,3 +1,8 @@
+## v0.3.1 - 2024-10-14
+
+* moved all SMR-related functionality to a separate crate - `fast-smr`.
+* brought back custom Arc and Weak implementations.
+
 ## v0.2.1 - 2024-04-05
 
 * fixed `upgrade` method of `AtomicWeak`: disallow loading `Snapshot`.

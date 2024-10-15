@@ -17,4 +17,4 @@ jobs:
           cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test -- --test-threads=1
       - run: rustup +nightly component add miri
-      - run: cargo +nightly miri test -- --test-threads=1
+      - run: cargo +nightly miri test --many-seeds=0..3

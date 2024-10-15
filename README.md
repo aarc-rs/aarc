@@ -29,8 +29,8 @@ performance guarantees in highly-contended settings.
 Instead of protecting in-place updates with locks, an alternative approach is to perform copy-on-write updates by
 atomically installing pointers. To avoid use-afer-free, mechanisms for safe memory reclamation (SMR) are typically
 utilized (i.e. hazard pointers, epoch-based reclamation). `aarc` uses the blazingly fast algorithm provided by the
-`fast-smr` crate and builds on top of it, hiding unsafety and providing convenient RAII semantics through
-reference-counted pointers.
+[`fast-smr`](https://github.com/aarc-rs/fast-smr) crate and builds on top of it, hiding unsafety and providing
+convenient RAII semantics through reference-counted pointers.
 
 ### Examples
 

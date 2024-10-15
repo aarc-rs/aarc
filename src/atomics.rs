@@ -21,7 +21,7 @@ use crate::StrongPtr;
 /// * When an `AtomicArc` is updated or dropped, the strong count of the previously pointed-to
 ///   object may not be immediately decremented. Thus:
 ///     * `T` must be `'static` to support delayed deallocations.
-///     * [`Arc::strong_count_raw`] will likely be an overestimate.
+///     * The value returned by `strong_count` will likely be an overestimate.
 ///
 /// # Examples
 /// ```

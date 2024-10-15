@@ -1,6 +1,4 @@
-/*
 #![doc = include_str!("../README.md")]
-*/
 
 pub use atomics::AtomicArc;
 pub use atomics::AtomicWeak;

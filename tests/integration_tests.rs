@@ -1,11 +1,14 @@
-use aarc::{AtomicArc, AtomicWeak, Snapshot};
-use rand::random;
+use std::ptr::{null, null_mut};
 use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering::SeqCst;
-use std::sync::Arc;
+use std::sync::atomic::Ordering::Relaxed;
 use std::thread;
 
+use rand::random;
+
+use aarc::{Arc, AsPtr, AtomicArc, AtomicWeak, Guard};
+
 fn test_stack(threads_count: usize, iters_per_thread: usize) {
+    #[derive(Default)]
     struct StackNode {
         val: usize,
         next: Option<Arc<Self>>,
@@ -16,26 +19,30 @@ fn test_stack(threads_count: usize, iters_per_thread: usize) {
         top: AtomicArc<StackNode>,
     }
 
+    unsafe impl Send for Stack {}
+    unsafe impl Sync for Stack {}
+
     impl Stack {
         fn push(&self, val: usize) {
-            let mut top = self.top.load::<Snapshot<_>>();
+            let mut top = self.top.load();
             loop {
+                let top_ptr = top.as_ref().map_or(null(), AsPtr::as_ptr);
                 let new_node = Arc::new(StackNode {
                     val,
                     next: top.as_ref().map(Arc::from),
                 });
-                match self.top.compare_exchange(top.as_ref(), Some(&new_node)) {
+                match self.top.compare_exchange(top_ptr, Some(&new_node)) {
                     Ok(()) => break,
                     Err(before) => top = before,
                 }
             }
         }
-        fn pop(&self) -> Option<Snapshot<StackNode>> {
-            let mut top = self.top.load::<Snapshot<_>>();
+        fn pop(&self) -> Option<Guard<StackNode>> {
+            let mut top = self.top.load();
             while let Some(top_node) = top.as_ref() {
                 match self
                     .top
-                    .compare_exchange(top.as_ref(), top_node.next.as_ref())
+                    .compare_exchange(top_node.as_ptr(), top_node.next.as_ref())
                 {
                     Ok(()) => return top,
                     Err(actual_top) => top = actual_top,
@@ -65,7 +72,7 @@ fn test_stack(threads_count: usize, iters_per_thread: usize) {
             s.spawn(|| {
                 for _ in 0..iters_per_thread {
                     let node = stack.pop().unwrap();
-                    val_counts[node.val].fetch_add(1, SeqCst);
+                    val_counts[node.val].fetch_add(1, Relaxed);
                 }
             });
         }
@@ -74,7 +81,7 @@ fn test_stack(threads_count: usize, iters_per_thread: usize) {
     // Verify that no nodes were lost.
 
     for count in &val_counts {
-        assert_eq!(count.load(SeqCst), threads_count);
+        assert_eq!(count.load(Relaxed), threads_count);
     }
 }
 
@@ -103,8 +110,8 @@ fn test_sorted_linked_list(threads_count: usize, iters_per_thread: usize) {
 
     impl LinkedList {
         fn insert_sorted(&self, val: usize) {
-            let mut curr_node = self.head.load::<Snapshot<_>>().unwrap();
-            let mut next = curr_node.next.load::<Snapshot<_>>();
+            let mut curr_node = self.head.load().unwrap();
+            let mut next = curr_node.next.load();
             loop {
                 if next.is_none() || val < next.as_ref().unwrap().val {
                     let new = Arc::new(ListNode {
@@ -112,12 +119,15 @@ fn test_sorted_linked_list(threads_count: usize, iters_per_thread: usize) {
                         prev: AtomicWeak::from(&curr_node),
                         next: next.as_ref().map_or(AtomicArc::default(), AtomicArc::from),
                     });
-                    match curr_node.next.compare_exchange(next.as_ref(), Some(&new)) {
+                    match curr_node.next.compare_exchange(
+                        next.as_ref().map_or(null_mut(), Guard::as_ptr),
+                        Some(&new),
+                    ) {
                         Ok(()) => {
                             if let Some(next_node) = next {
                                 // This is technically incorrect; another node could've been
                                 // inserted, but it's not crucial for this test.
-                                next_node.prev.store(Some(&Arc::downgrade(&new)));
+                                next_node.prev.store(Some(&new));
                             }
                             break;
                         }
@@ -147,9 +157,9 @@ fn test_sorted_linked_list(threads_count: usize, iters_per_thread: usize) {
 
     // Verify that no nodes were lost and that the list is in sorted order.
     let mut i = 0;
-    let mut curr_node = list.head.load::<Arc<_>>().unwrap();
+    let mut curr_node = list.head.load().unwrap();
     loop {
-        let next = curr_node.next.load::<Arc<_>>();
+        let next = curr_node.next.load();
         if let Some(next_node) = next {
             assert!(curr_node.val <= next_node.val);
             curr_node = next_node;
@@ -160,7 +170,7 @@ fn test_sorted_linked_list(threads_count: usize, iters_per_thread: usize) {
     }
     assert_eq!(threads_count * iters_per_thread, i);
     // Iterate in reverse order using the weak ptrs.
-    while let Some(prev_node) = curr_node.prev.upgrade() {
+    while let Some(prev_node) = curr_node.prev.load() {
         assert!(curr_node.val >= prev_node.val);
         curr_node = prev_node;
     }

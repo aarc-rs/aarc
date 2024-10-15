@@ -10,5 +10,8 @@ keywords = ["atomic", "arc", "thread-safe", "sync", "lock-free"]
 categories = ["concurrency", "memory-management", "data-structures", "algorithms"]
 exclude = [".github/", ".gitignore", "target/"]
 
+[dependencies]
+fast-smr = "0.2.2"
+
 [dev-dependencies]
 rand = "0.8"

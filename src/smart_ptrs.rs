@@ -1,84 +1,77 @@
-use std::alloc::{dealloc, Layout};
+use std::alloc::Layout;
+use std::cell::RefCell;
 use std::marker::PhantomData;
-use std::mem::{forget, ManuallyDrop};
 use std::ops::Deref;
-use std::ptr::{addr_of_mut, drop_in_place, NonNull};
+use std::ptr::{addr_of, NonNull};
 use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering::{Relaxed, SeqCst};
+use std::sync::atomic::Ordering::SeqCst;
 
 use fast_smr::smr;
-use fast_smr::smr::{load_era, retire};
+use fast_smr::smr::{Reclaimer, ThreadContext};
 
-/// An [`Arc`]-like smart pointer that can be loaded from atomics.
+// The global default `Reclaimer`.
+pub(crate) static RECLAIMER: Reclaimer = Reclaimer::new();
+
+thread_local! {
+    pub(crate) static CTX: RefCell<ThreadContext<'static>> = RefCell::new(RECLAIMER.get_ctx(1));
+}
+
+/// An [`Arc`]-like smart pointer that can be loaded from `AtomicArc`.
 ///
 /// Usage notes:
 /// * A `Guard` should be used as a temporary variable within a local scope, not as a replacement
 ///   for [`Arc`] in a data structure.
 /// * `Guard` implements `Deref` and prevents deallocation like [`Arc`], but it does not contribute
-///   to the strong count.
-pub struct Guard<T: 'static> {
-    pub(crate) guard: smr::Guard<T>,
+///   to the ref count.
+pub struct Guard<'a, T> {
+    pub(crate) guard: smr::Guard<'a, ArcInner<T>>,
 }
 
-impl<T: 'static> Deref for Guard<T> {
+impl<'a, T> Guard<'a, T> {
+    pub(crate) fn inner_ptr(this: &Self) -> *const ArcInner<T> {
+        this.guard.as_ptr()
+    }
+    pub(crate) fn data_ptr(this: &Self) -> *const T {
+        unsafe { addr_of!((*Self::inner_ptr(this)).data) }
+    }
+}
+
+impl<'a, T> Deref for Guard<'a, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        unsafe { &*self.guard.as_ptr() }
+        unsafe { &*Self::data_ptr(self) }
     }
 }
 
-impl<T: 'static> From<&Guard<T>> for Arc<T> {
-    fn from(value: &Guard<T>) -> Self {
-        unsafe {
-            let ptr = value.guard.as_ptr();
-            Self::increment_strong_count(ptr);
-            Self {
-                ptr: NonNull::new_unchecked(find_inner_ptr(ptr).cast_mut()),
-                phantom: PhantomData,
-            }
-        }
-    }
+/// A replacement for [`std::sync::Arc`].
+pub struct Arc<T> {
+    pub(crate) ptr: NonNull<ArcInner<T>>,
+    pub(crate) phantom: PhantomData<ArcInner<T>>,
 }
 
-impl<T: 'static> From<&Guard<T>> for Weak<T> {
-    fn from(value: &Guard<T>) -> Self {
-        unsafe {
-            let ptr = value.guard.as_ptr();
-            Self::increment_weak_count(ptr);
-            Self {
-                ptr: NonNull::new_unchecked(find_inner_ptr(ptr).cast_mut()),
-            }
-        }
-    }
-}
-
-/// A drop-in replacement for [`std::sync::Arc`].
-pub struct Arc<T: 'static> {
-    ptr: NonNull<ArcInner<T>>,
-    phantom: PhantomData<ArcInner<T>>,
-}
-
-impl<T: 'static> Arc<T> {
+/// Similar to [`std::sync::Arc`]. There is no weak count and thus no `Weak` struct.
+/// In accordance with the deferred reclamation scheme, the ref count of the pointed-to block
+/// may not immediately be decremented on drop.
+impl<T> Arc<T> {
+    /// See: [`std::sync::Arc::new`].
     pub fn new(data: T) -> Self {
         unsafe {
-            let ptr = NonNull::new_unchecked(Box::into_raw(Box::new(ArcInner {
-                strong_count: AtomicUsize::new(1),
-                weak_count: AtomicUsize::new(1),
-                birth_era: load_era(),
-                data,
-            })));
+            let ptr = NonNull::new_unchecked(ArcInner::new(data));
             Self {
                 ptr,
                 phantom: PhantomData,
             }
         }
     }
-    pub fn into_raw(this: Self) -> *const T {
-        let ptr = this.as_ptr();
-        forget(this);
-        ptr
+
+    /// # Safety
+    /// Since `Guard`s may exist, there is no safe `get_mut`.
+    /// It is the user's responsibility to ensure that there are no other pointers to the same allocation.
+    pub unsafe fn get_mut_unchecked(this: &mut Self) -> &mut T {
+        &mut (*this.ptr.as_ptr()).data
     }
+
     /// # Safety
     /// See [`std::sync::Arc::from_raw`].
     pub unsafe fn from_raw(ptr: *const T) -> Self {
@@ -87,18 +80,24 @@ impl<T: 'static> Arc<T> {
             phantom: PhantomData,
         }
     }
-    pub(crate) unsafe fn strong_count_raw(ptr: *const T) -> usize {
-        (*find_inner_ptr(ptr)).strong_count.load(SeqCst)
+
+    /// Returns the number of strong (`Arc` or `AtomicArc`) pointers to this allocation.
+    pub fn ref_count(this: &Arc<T>) -> usize {
+        unsafe { (*this.ptr.as_ptr()).ref_count.load(SeqCst) }
     }
-    pub(crate) unsafe fn increment_strong_count(ptr: *const T) {
-        _ = ManuallyDrop::new(Self::from_raw(ptr)).clone();
+
+    pub(crate) fn inner_ptr(this: &Self) -> *const ArcInner<T> {
+        this.ptr.as_ptr()
+    }
+    pub(crate) fn data_ptr(this: &Self) -> *const T {
+        unsafe { addr_of!((*Self::inner_ptr(this)).data) }
     }
 }
 
-impl<T: 'static> Clone for Arc<T> {
+impl<T> Clone for Arc<T> {
     fn clone(&self) -> Self {
         unsafe {
-            self.ptr.as_ref().strong_count.fetch_add(1, SeqCst);
+            ArcInner::increment(self.ptr.as_ptr());
         }
         Self {
             ptr: self.ptr,
@@ -107,73 +106,43 @@ impl<T: 'static> Clone for Arc<T> {
     }
 }
 
-impl<T: 'static> Deref for Arc<T> {
+impl<T> Deref for Arc<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        unsafe { &self.ptr.as_ref().data }
+        unsafe { &*Self::data_ptr(self) }
     }
 }
 
-impl<T: 'static> Drop for Arc<T> {
+impl<T> Drop for Arc<T> {
     fn drop(&mut self) {
-        let birth_era = unsafe { self.ptr.as_ref().birth_era };
-        retire(self.ptr.cast(), decrement_strong_count::<T>, birth_era);
-    }
-}
-
-fn decrement_strong_count<T>(ptr: NonNull<u8>) {
-    unsafe {
-        let inner = ptr.cast::<ArcInner<T>>().as_ptr();
-        if (*inner).strong_count.fetch_sub(1, SeqCst) == 1 {
-            drop_in_place(&mut (*inner).data);
-            decrement_weak_count::<T>(ptr);
-        }
-    }
-}
-
-/// A drop-in replacement for [`std::sync::Weak`].
-pub struct Weak<T: 'static> {
-    ptr: NonNull<ArcInner<T>>,
-}
-
-impl<T: 'static> Weak<T> {
-    pub(crate) unsafe fn increment_weak_count(ptr: *const T) {
-        _ = ManuallyDrop::new(Self::from_raw(ptr)).clone();
-    }
-    pub(crate) unsafe fn from_raw(ptr: *const T) -> Self {
-        Self {
-            ptr: NonNull::new_unchecked(find_inner_ptr(ptr).cast_mut()),
-        }
-    }
-}
-
-impl<T: 'static> Clone for Weak<T> {
-    fn clone(&self) -> Self {
         unsafe {
-            self.ptr.as_ref().weak_count.fetch_add(1, SeqCst);
-        }
-        Self { ptr: self.ptr }
-    }
-}
-
-impl<T: 'static> Drop for Weak<T> {
-    fn drop(&mut self) {
-        let birth_era = unsafe { self.ptr.as_ref().birth_era };
-        retire(self.ptr.cast(), decrement_weak_count::<T>, birth_era);
-    }
-}
-
-fn decrement_weak_count<T>(ptr: NonNull<u8>) {
-    unsafe {
-        let inner = ptr.cast::<ArcInner<T>>().as_ptr();
-        if (*inner).weak_count.fetch_sub(1, SeqCst) == 1 {
-            dealloc(ptr.as_ptr(), Layout::new::<ArcInner<T>>());
+            ArcInner::delayed_decrement(self.ptr.as_ptr());
         }
     }
 }
 
-unsafe fn find_inner_ptr<T>(ptr: *const T) -> *const ArcInner<T> {
+impl<'a, T> From<&Guard<'a, T>> for Arc<T> {
+    fn from(value: &Guard<'a, T>) -> Self {
+        unsafe {
+            let inner_ptr = Guard::inner_ptr(value);
+            _ = (*inner_ptr).ref_count.fetch_add(1, SeqCst);
+            Self {
+                ptr: NonNull::new_unchecked(inner_ptr.cast_mut()),
+                phantom: PhantomData,
+            }
+        }
+    }
+}
+
+impl<'a, T> From<&Arc<T>> for Guard<'a, T> {
+    fn from(value: &Arc<T>) -> Self {
+        let guard = CTX.with_borrow(|ctx| ctx.must_protect(value.ptr));
+        Guard { guard }
+    }
+}
+
+pub(crate) unsafe fn find_inner_ptr<T>(ptr: *const T) -> *const ArcInner<T> {
     let layout = Layout::new::<ArcInner<()>>();
     let offset = layout.size() + padding_needed_for(&layout, align_of::<T>());
     ptr.byte_sub(offset) as *const ArcInner<T>
@@ -187,81 +156,69 @@ fn padding_needed_for(layout: &Layout, align: usize) -> usize {
 }
 
 #[repr(C)]
-struct ArcInner<T> {
-    strong_count: AtomicUsize,
-    weak_count: AtomicUsize,
-    birth_era: u64,
-    data: T,
+pub(crate) struct ArcInner<T> {
+    pub(crate) birth_epoch: u64,
+    pub(crate) ref_count: AtomicUsize,
+    pub(crate) data: T,
 }
 
-/// A trait for extracting a raw pointer from a smart pointer.
-pub trait AsPtr {
-    type Target;
-
-    fn as_ptr(&self) -> *const Self::Target;
-}
-
-impl<T: 'static> AsPtr for Arc<T> {
-    type Target = T;
-
-    fn as_ptr(&self) -> *const T {
-        unsafe { addr_of_mut!((*self.ptr.as_ptr()).data) }
+impl<T> ArcInner<T> {
+    pub(crate) fn new(data: T) -> *mut Self {
+        Box::into_raw(Box::new(ArcInner {
+            birth_epoch: RECLAIMER.current_epoch(),
+            ref_count: AtomicUsize::new(1),
+            data,
+        }))
     }
-}
 
-impl<T: 'static> AsPtr for Weak<T> {
-    type Target = T;
-
-    fn as_ptr(&self) -> *const T {
-        unsafe { addr_of_mut!((*self.ptr.as_ptr()).data) }
+    pub(crate) unsafe fn increment(ptr: *mut Self) {
+        _ = (*ptr).ref_count.fetch_add(1, SeqCst);
     }
-}
 
-impl<T: 'static> AsPtr for Guard<T> {
-    type Target = T;
-
-    fn as_ptr(&self) -> *const T {
-        self.guard.as_ptr().cast_const()
+    pub(crate) unsafe fn delayed_decrement(ptr: *mut ArcInner<T>) {
+        CTX.with_borrow(|ctx| {
+            ctx.retire(
+                ptr as *mut u8,
+                Layout::new::<ArcInner<T>>(),
+                Self::decrement,
+                (*ptr).birth_epoch,
+            );
+        });
     }
-}
 
-/// A marker trait for types that prevent deallocation ([`Arc`] and [`Guard`]).
-pub trait StrongPtr {}
-impl<T: 'static> StrongPtr for Arc<T> {}
-impl<T: 'static> StrongPtr for Guard<T> {}
-
-pub trait RefCount {
-    fn strong_count(&self) -> usize;
-    fn weak_count(&self) -> usize;
-}
-
-impl<T: AsPtr> RefCount for T {
-    fn strong_count(&self) -> usize {
-        unsafe {
-            let inner = find_inner_ptr(self.as_ptr());
-            (*inner).strong_count.load(Relaxed)
+    unsafe fn decrement(ptr: *mut u8, _layout: Layout) {
+        let inner_ptr = ptr as *mut ArcInner<T>;
+        if (*inner_ptr).ref_count.fetch_sub(1, SeqCst) == 1 {
+            drop(Box::from_raw(inner_ptr));
         }
     }
+}
 
-    fn weak_count(&self) -> usize {
-        unsafe {
-            let inner = find_inner_ptr(self.as_ptr());
-            (*inner).weak_count.load(Relaxed) - 1
-        }
+impl<T> From<&Arc<T>> for NonNull<T> {
+    fn from(value: &Arc<T>) -> Self {
+        unsafe { NonNull::new_unchecked(Arc::data_ptr(value).cast_mut()) }
+    }
+}
+
+impl<'a, T> From<&Guard<'a, T>> for NonNull<T> {
+    fn from(value: &Guard<'a, T>) -> Self {
+        unsafe { NonNull::new_unchecked(Guard::data_ptr(value).cast_mut()) }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::smart_ptrs::Arc;
+    use crate::{Arc, Guard};
 
     #[test]
-    fn test_arc() {
+    fn basic_test() {
         let x = Arc::new(55usize);
         assert_eq!(*x, 55);
-        unsafe {
-            let y = Arc::from_raw(Arc::into_raw(x));
-            assert_eq!(*y, 55);
-        }
+        assert_eq!(Arc::ref_count(&x), 1);
+        let y = Guard::from(&x);
+        assert_eq!(*x, *y);
+        drop(x);
+        assert_eq!(*y, 55);
+        drop(y);
     }
 }

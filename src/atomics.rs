@@ -194,3 +194,122 @@ impl<T: 'static, P: Into<NonNull<T>>> From<P> for AtomicArc<T> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::{Arc, AtomicArc, CompareExchange};
+
+    #[test]
+    fn test_new_with_value() {
+        let atomic = AtomicArc::new(42);
+        let guard = atomic.load().unwrap();
+        assert_eq!(*guard, 42);
+    }
+
+    #[test]
+    fn test_new_with_none() {
+        let atomic: AtomicArc<i32> = AtomicArc::new(None);
+        assert!(atomic.load().is_none());
+    }
+
+    #[test]
+    fn test_swap() {
+        let atomic = AtomicArc::new(10);
+        let arc = Arc::new(20);
+
+        let old = atomic.swap(Some(&arc));
+        assert!(old.is_some());
+        assert_eq!(*old.unwrap(), 10);
+
+        let guard = atomic.load().unwrap();
+        assert_eq!(*guard, 20);
+    }
+
+    #[test]
+    fn test_swap_none() {
+        let atomic = AtomicArc::new(10);
+        let old = atomic.swap::<&Arc<i32>>(None);
+
+        assert!(old.is_some());
+        assert_eq!(*old.unwrap(), 10);
+        assert!(atomic.load().is_none());
+    }
+
+    #[test]
+    fn test_clone() {
+        let atomic = AtomicArc::new(42);
+        let cloned = atomic.clone();
+
+        let guard1 = atomic.load().unwrap();
+        let guard2 = cloned.load().unwrap();
+
+        assert_eq!(*guard1, 42);
+        assert_eq!(*guard2, 42);
+    }
+
+    #[test]
+    fn test_clone_none() {
+        let atomic: AtomicArc<i32> = AtomicArc::new(None);
+        let cloned = atomic.clone();
+
+        assert!(atomic.load().is_none());
+        assert!(cloned.load().is_none());
+    }
+
+    #[test]
+    fn test_compare_exchange_success_with_arc() {
+        let arc1 = Arc::new(10);
+        let arc2 = Arc::new(20);
+        let atomic = AtomicArc::new(10);
+        atomic.store(Some(&arc1));
+
+        let result = atomic.compare_exchange(Some(&arc1), Some(&arc2));
+        assert!(result.is_ok());
+
+        let guard = atomic.load().unwrap();
+        assert_eq!(*guard, 20);
+    }
+
+    #[test]
+    fn test_compare_exchange_failure_with_arc() {
+        let arc1 = Arc::new(10);
+        let arc2 = Arc::new(20);
+        let arc3 = Arc::new(30);
+        let atomic = AtomicArc::new(10);
+        atomic.store(Some(&arc1));
+
+        // Try to compare with arc2 (which is not the current value)
+        let result = atomic.compare_exchange(Some(&arc2), Some(&arc3));
+        assert!(result.is_err());
+
+        // Value should remain unchanged
+        let guard = atomic.load().unwrap();
+        assert_eq!(*guard, 10);
+    }
+
+    #[test]
+    fn test_compare_exchange_with_guard() {
+        let arc1 = Arc::new(10);
+        let arc2 = Arc::new(20);
+        let atomic = AtomicArc::new(10);
+        atomic.store(Some(&arc1));
+
+        let guard = atomic.load().unwrap();
+        let result = atomic.compare_exchange(Some(&guard), Some(&arc2));
+        assert!(result.is_ok());
+
+        let new_guard = atomic.load().unwrap();
+        assert_eq!(*new_guard, 20);
+    }
+
+    #[test]
+    fn test_from_arc() {
+        let arc = Arc::new(42);
+        let atomic = AtomicArc::new(0);
+        atomic.store(Some(&arc));
+
+        let guard = atomic.load().unwrap();
+        assert_eq!(*guard, 42);
+        assert_eq!(*arc, 42);
+    }
+}

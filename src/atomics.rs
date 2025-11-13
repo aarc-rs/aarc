@@ -145,7 +145,7 @@ impl<T: 'static> CompareExchange<T, &Arc<T>> for AtomicArc<T> {
         current: Option<C>,
         new: Option<&Arc<T>>,
     ) -> Result<(), Option<Guard<'static, T>>> {
-        let g = new.map_or(None, |n| Some(Guard::from(n)));
+        let g = new.map(Guard::from);
         CompareExchange::compare_exchange(self, current, g.as_ref())
     }
 }

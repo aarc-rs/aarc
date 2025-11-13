@@ -6,13 +6,12 @@
 
 ### Quickstart
 
-- [`Arc`](https://docs.rs/aarc/latest/aarc/struct.Arc.html): a replacement for the standard library's `Arc`, 
-but implemented with deferred reclamation semantics.
-- [`AtomicArc`](https://docs.rs/aarc/latest/aarc/struct.AtomicArc.html): an `Arc` with an atomically updatable pointer.
-Supports standard atomic operations like `compare_exchange`.
-- [`Guard`](https://docs.rs/aarc/latest/aarc/struct.Guard.html): A special smart pointer that is loaded from 
-`AtomicArc`. It is similar to `Arc` in that it prevents deallocation, but it does not contribute to reference counts. 
-This reduces contention when multiple threads operate on the same variable.
+- [`Arc`](https://docs.rs/aarc/latest/aarc/struct.Arc.html): a replacement for the standard library's `Arc`, but implemented with deferred reclamation semantics.
+- [`AtomicArc`](https://docs.rs/aarc/latest/aarc/struct.AtomicArc.html): an `Arc` with an atomically updatable pointer. Supports standard atomic operations like 
+  `compare_exchange`.
+- [`Guard`](https://docs.rs/aarc/latest/aarc/struct.Guard.html): A special smart pointer that is loaded from `AtomicArc`. It is similar to `Arc` in that it prevents 
+  deallocation, but it does not contribute to reference counts. This reduces contention when multiple threads operate on 
+  the same variable.
 
 ### Motivation
 

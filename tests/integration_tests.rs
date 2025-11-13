@@ -25,7 +25,7 @@ fn test_stack(threads_count: usize, iters_per_thread: usize) {
         fn push(&self, val: usize) {
             let mut top = self.top.load();
             loop {
-                let next = top.as_ref().map_or(None, |g| Some(Arc::from(g)));
+                let next = top.as_ref().map(Arc::from);
                 let new_node = Arc::new(StackNode { val, next });
                 match self.top.compare_exchange(top.as_ref(), Some(&new_node)) {
                     Ok(_) => break,

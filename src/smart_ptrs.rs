@@ -1,10 +1,12 @@
 use std::alloc::Layout;
 use std::cell::RefCell;
 use std::marker::PhantomData;
+use std::num::NonZeroUsize;
 use std::ops::Deref;
 use std::ptr::{addr_of, NonNull};
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::SeqCst;
+use std::thread::available_parallelism;
 
 use fast_smr::smr;
 use fast_smr::smr::{Reclaimer, ThreadContext};
@@ -13,7 +15,8 @@ use fast_smr::smr::{Reclaimer, ThreadContext};
 pub(crate) static RECLAIMER: Reclaimer = Reclaimer::new();
 
 thread_local! {
-    pub(crate) static CTX: RefCell<ThreadContext<'static>> = RefCell::new(RECLAIMER.get_ctx(1));
+    pub(crate) static CTX: RefCell<ThreadContext<'static>> = RefCell::new(
+        RECLAIMER.get_ctx(available_parallelism().map_or(8usize, NonZeroUsize::get)));
 }
 
 /// An [`Arc`]-like smart pointer that can be loaded from `AtomicArc`.

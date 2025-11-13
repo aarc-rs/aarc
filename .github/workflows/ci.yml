@@ -8,6 +8,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - run: rustup update stable && rustup update nightly
       - run: cargo check
       - run: >
           rustup component add rustfmt && 
@@ -15,6 +16,6 @@ jobs:
       - run: >
           rustup component add clippy && 
           cargo clippy --all-targets --all-features -- -D warnings
-      - run: cargo test -- --test-threads=1
+      - run: cargo test
       - run: rustup +nightly component add miri
-      - run: cargo +nightly miri test --many-seeds=0..3
+      - run: MIRIFLAGS="-Zmiri-many-seeds=0..4" cargo +nightly miri test
